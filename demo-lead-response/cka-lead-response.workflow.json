@@ -1,0 +1,3072 @@
+{
+  "name": "CKA Demo — Lead Response Router",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## CKA Demo — Lead Response Router\nPortfolio demo for Chris Davis / CKA Consulting.\nFake data only. This workflow is **inactive**. It is not a live client system.\nFictional shop in the sample copy: Northwind Home Services.\n\n### Classification (rules, no LLM)\n1. Spam terms → SPAM\n2. Emergency terms → EMERGENCY\n3. Quote terms, or any other valid lead → QUOTE\n\n### Hours — Mon–Fri 08:00–17:00 America/Chicago\n- After-hours EMERGENCY emails owner@example.com. The customer is not auto-replied.\n- In-hours EMERGENCY is logged as queued_in_hours. No auto email.\n- QUOTE gets a polite auto-reply at any hour.\n- SPAM and duplicates are logged and never replied to.\n\n### Fail-safe\n`contacted=true` only after the quote email node succeeds.\nA send error leaves contacted false.\nDedupe: same email + normalized message within 24 hours.\nIf the sheet cannot be read, nothing is sent.\n\n### Placeholders\n- Sheet id: `REPLACE_WITH_LEADS_SPREADSHEET_ID`\n- Google credential name: `CKA Demo — Google Sheets`\n- SMTP credential name: `CKA Demo — SMTP`\n- From: dispatch@example.com\n- Owner alert: owner@example.com\n\nThe manual trigger runs samples/quote.json.\n`demo_received_at` is honored while ALLOW_DEMO_CLOCK is true.",
+        "height": 620,
+        "width": 520,
+        "color": 4
+      },
+      "id": "a1000001-0000-4000-8000-000000000001",
+      "name": "Sticky: Read me",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Send, then mark\nRows are appended with contacted=false **before** any email node.\nThe update nodes run only after the email node.\nSuccess is the only path that can set contacted=true, and only for a quote reply.\nOwner alerts stay contacted=false because the customer was not emailed.\nIf the update node fails, the HTTP result says so and the original row is still contacted=false.",
+        "height": 260,
+        "width": 420,
+        "color": 3
+      },
+      "id": "a1000001-0000-4000-8000-000000000002",
+      "name": "Sticky: Fail-safe",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2920,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cka-demo-lead-response",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1000001-0000-4000-8000-000000000003",
+      "name": "Lead Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        560,
+        360
+      ],
+      "webhookId": "c0ffee00-0000-4000-8000-0000000000a1"
+    },
+    {
+      "parameters": {},
+      "id": "a1000001-0000-4000-8000-000000000004",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        280,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{ json: {\n  \"name\": \"Jamie Rivera\",\n  \"email\": \"jamie.rivera@example.com\",\n  \"message\": \"Could I get a quote to replace a water heater next week?\",\n  \"demo_received_at\": \"2026-09-29T15:00:00.000Z\"\n} }];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000005",
+      "name": "Sample Lead",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        680
+      ],
+      "notes": "Inlined from demo-lead-response/samples/quote.json.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Generated from demo-lead-response/lib/lead-rules.js (2026-09-29.1).\n// Edit the lib, then run npm run build:workflows.\n/**\n * Lead-response rules for the CKA Consulting portfolio demo.\n * Transparent and local: no LLM and no network calls.\n * The n8n Code nodes are generated from this file. Keep status strings here\n * so the canvas and the tests cannot drift.\n *\n * Classification order (first match wins):\n * 1. SPAM terms → SPAM (logged, never replied to)\n * 2. EMERGENCY terms → EMERGENCY\n * 3. QUOTE terms → QUOTE\n * 4. Anything else that is a valid lead → QUOTE (polite ack, intent_rule default_quote_no_keyword)\n *\n * Business hours: Monday–Friday, 08:00 inclusive to 17:00 exclusive, America/Chicago.\n * Dedupe: same email + normalized message within DEDUPE_HOURS.\n * contacted=true only when a quote auto-reply send succeeds.\n */\n\nconst RULES_VERSION = '2026-09-29.1';\nconst ALLOW_DEMO_CLOCK = true;\nconst BUSINESS_TZ = 'America/Chicago';\nconst BUSINESS_START_HOUR = 8;\nconst BUSINESS_END_HOUR = 17;\nconst DEDUPE_HOURS = 24;\nconst OWNER_ALERT_EMAIL = 'owner@example.com';\nconst DISPATCH_FROM_EMAIL = 'dispatch@example.com';\nconst DEMO_BRAND = 'Northwind Home Services';\n\nconst LEAD_COLUMNS = [\n  'lead_id',\n  'received_at',\n  'name',\n  'email',\n  'phone',\n  'message',\n  'message_normalized',\n  'intent',\n  'intent_rule',\n  'business_hours',\n  'dedupe_key',\n  'dedupe_hours',\n  'status',\n  'contacted',\n  'action_taken',\n  'error',\n  'duplicate_of',\n  'source',\n  'rules_version',\n];\n\nconst STATUS = {\n  invalid: 'invalid',\n  dedupeCheckFailed: 'dedupe_check_failed',\n  duplicateSuppressed: 'duplicate_suppressed',\n  received: 'received',\n  queuedInHours: 'queued_in_hours',\n  spamLogged: 'spam_logged',\n  ownerAlerted: 'owner_alerted',\n  ownerAlertFailed: 'owner_alert_failed',\n  ownerAlertedSheetUpdateFailed: 'owner_alerted_sheet_update_failed',\n  replySent: 'reply_sent',\n  replyFailed: 'reply_failed',\n  replySentSheetUpdateFailed: 'reply_sent_sheet_update_failed',\n  logFailed: 'log_failed',\n  unrouted: 'unrouted',\n};\n\nconst ACTION = {\n  rejectInvalid: 'reject_invalid',\n  failClosedNoSend: 'fail_closed_no_send',\n  suppressDuplicate: 'suppress_duplicate',\n  queueForOwner: 'queue_for_owner',\n  logOnly: 'log_only',\n  alertOwnerPending: 'alert_owner_pending',\n  alertOwner: 'alert_owner',\n  alertOwnerFailed: 'alert_owner_failed',\n  quoteReplyPending: 'quote_reply_pending',\n  quoteAutoReply: 'quote_auto_reply',\n  quoteAutoReplyFailed: 'quote_auto_reply_failed',\n  logFailedNoSend: 'log_failed_no_send',\n  unroutedNoSend: 'unrouted_no_send',\n};\n\nconst EMERGENCY_TERMS = [\n  'emergency',\n  'urgent',\n  'asap',\n  'right now',\n  'no heat',\n  'no hot water',\n  'no power',\n  'power out',\n  'flood',\n  'flooding',\n  'leak',\n  'burst',\n  'gas smell',\n  'smell gas',\n  'sewage',\n  'sewer backup',\n  'sparking',\n  'locked out',\n  'carbon monoxide',\n  'smoke',\n  'fire',\n];\n\nconst SPAM_TERMS = [\n  'unsubscribe',\n  'seo service',\n  'search engine optimization',\n  'backlink',\n  'guest post',\n  'crypto',\n  'bitcoin',\n  'viagra',\n  'casino',\n  'lottery',\n  'you have won',\n  'limited time offer',\n  'click here',\n  'buy now',\n  'work from home',\n  'increase your sales',\n  'lead generation service',\n];\n\nconst QUOTE_TERMS = [\n  'quote',\n  'estimate',\n  'pricing',\n  'price',\n  'how much',\n  'bid',\n  'schedule',\n  'appointment',\n  'install',\n  'replace',\n  'availability',\n];\n\nfunction normalizeMessage(text) {\n  return String(text || '')\n    .toLowerCase()\n    .replace(/https?:\\/\\/\\S+/g, ' ')\n    .replace(/['’]/g, '')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction hasTerm(normalized, term) {\n  const needle = normalizeMessage(term);\n  if (!needle) return false;\n  const escaped = needle.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  return new RegExp(`(?:^|\\\\s)${escaped}(?:\\\\s|$)`).test(normalized);\n}\n\nfunction hasAnyTerm(normalized, terms) {\n  return terms.some((term) => hasTerm(normalized, term));\n}\n\nfunction simpleHash(value) {\n  let hash = 2166136261;\n  const text = String(value);\n  for (let i = 0; i < text.length; i += 1) {\n    hash ^= text.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction businessHours(date) {\n  const parts = new Intl.DateTimeFormat('en-US', {\n    timeZone: BUSINESS_TZ,\n    weekday: 'short',\n    hour: '2-digit',\n    hourCycle: 'h23',\n  }).formatToParts(date);\n  const weekday = parts.find((part) => part.type === 'weekday')?.value;\n  const hour = Number(parts.find((part) => part.type === 'hour')?.value);\n  const weekend = weekday === 'Sat' || weekday === 'Sun';\n  const inHours = !weekend && hour >= BUSINESS_START_HOUR && hour < BUSINESS_END_HOUR;\n  return inHours ? 'in_hours' : 'after_hours';\n}\n\nfunction resolveNow(payload, options) {\n  if (payload.demo_received_at && ALLOW_DEMO_CLOCK && options.allowDemoClock !== false) {\n    const parsed = new Date(payload.demo_received_at);\n    if (!Number.isNaN(parsed.getTime())) {\n      return { now: parsed, demoClock: true };\n    }\n  }\n  const now = options.now ? new Date(options.now) : new Date();\n  return { now, demoClock: false };\n}\n\nfunction classifyLead(payload, options = {}) {\n  const name = String(payload.name || '').trim();\n  const email = String(payload.email || '').trim().toLowerCase();\n  const phone = String(payload.phone || '').trim();\n  const message = String(payload.message || '').trim();\n  const messageNormalized = normalizeMessage(message);\n  const validationErrors = [];\n\n  if (!name) validationErrors.push('name is required');\n  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) validationErrors.push('valid email is required');\n  if (!message) validationErrors.push('message is required');\n\n  let intent = 'QUOTE';\n  let intentRule = 'default_quote_no_keyword';\n  if (hasAnyTerm(messageNormalized, SPAM_TERMS)) {\n    intent = 'SPAM';\n    intentRule = 'spam_term';\n  } else if (hasAnyTerm(messageNormalized, EMERGENCY_TERMS)) {\n    intent = 'EMERGENCY';\n    intentRule = 'emergency_term';\n  } else if (hasAnyTerm(messageNormalized, QUOTE_TERMS)) {\n    intent = 'QUOTE';\n    intentRule = 'quote_term';\n  }\n\n  const { now, demoClock } = resolveNow(payload, options);\n  const hours = businessHours(now);\n  const leadId = `lead_${simpleHash(`${email}|${messageNormalized}|${now.toISOString()}`)}`;\n\n  return {\n    ok: validationErrors.length === 0,\n    validation_errors: validationErrors,\n    lead_id: leadId,\n    received_at: now.toISOString(),\n    name,\n    email,\n    phone,\n    message,\n    message_normalized: messageNormalized,\n    intent,\n    intent_rule: intentRule,\n    business_tz: BUSINESS_TZ,\n    business_hours: hours,\n    dedupe_key: `${email}|${simpleHash(messageNormalized)}`,\n    dedupe_hours: DEDUPE_HOURS,\n    demo_clock: demoClock,\n    rules_version: RULES_VERSION,\n    contacted: false,\n    status: validationErrors.length ? STATUS.invalid : STATUS.received,\n  };\n}\n\n/**\n * Same email and the same normalized message inside the dedupe window.\n * A matching row with an unparseable received_at counts as a duplicate\n * so a clock-format glitch cannot double-send.\n * Returns the earlier lead_id, or '' when the lead is new.\n */\nfunction findDuplicate(lead, rows) {\n  const windowMs = Number(lead.dedupe_hours || DEDUPE_HOURS) * 60 * 60 * 1000;\n  const now = Date.parse(lead.received_at);\n  for (const row of rows || []) {\n    const email = String(row.email || '').trim().toLowerCase();\n    const message = String(row.message_normalized || '');\n    if (!email || email !== lead.email) continue;\n    if (message !== lead.message_normalized) continue;\n    const seenAt = Date.parse(row.received_at);\n    if (Number.isNaN(seenAt) || Number.isNaN(now)) return String(row.lead_id || 'unknown');\n    const age = now - seenAt;\n    if (age >= 0 && age <= windowMs) return String(row.lead_id || 'unknown');\n  }\n  return '';\n}\n\n/**\n * Business decision for one lead. The n8n canvas implements this table.\n * sheetUpdate=failed covers a successful send whose sheet status write failed.\n * contacted stays false unless a quote reply send succeeded.\n */\nfunction routeLead({\n  lead,\n  sheetsAvailable = true,\n  isDuplicate = false,\n  sendResult = 'pending',\n  sheetUpdate = 'ok',\n}) {\n  if (!lead.ok) {\n    return {\n      status: STATUS.invalid,\n      contacted: false,\n      action: ACTION.rejectInvalid,\n      send: null,\n      http: 400,\n    };\n  }\n  if (!sheetsAvailable) {\n    return {\n      status: STATUS.dedupeCheckFailed,\n      contacted: false,\n      action: ACTION.failClosedNoSend,\n      send: null,\n      http: 503,\n    };\n  }\n  if (isDuplicate) {\n    return {\n      status: STATUS.duplicateSuppressed,\n      contacted: false,\n      action: ACTION.suppressDuplicate,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'SPAM') {\n    return {\n      status: STATUS.spamLogged,\n      contacted: false,\n      action: ACTION.logOnly,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'EMERGENCY' && lead.business_hours === 'in_hours') {\n    return {\n      status: STATUS.queuedInHours,\n      contacted: false,\n      action: ACTION.queueForOwner,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'EMERGENCY') {\n    if (sendResult === 'success' && sheetUpdate === 'failed') {\n      return {\n        status: STATUS.ownerAlertedSheetUpdateFailed,\n        contacted: false,\n        action: ACTION.alertOwner,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    if (sendResult === 'success') {\n      return {\n        status: STATUS.ownerAlerted,\n        contacted: false,\n        action: ACTION.alertOwner,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    if (sendResult === 'error') {\n      return {\n        status: STATUS.ownerAlertFailed,\n        contacted: false,\n        action: ACTION.alertOwnerFailed,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    return {\n      status: STATUS.received,\n      contacted: false,\n      action: ACTION.alertOwnerPending,\n      send: 'owner',\n      http: 200,\n    };\n  }\n  if (lead.intent === 'QUOTE') {\n    if (sendResult === 'success' && sheetUpdate === 'failed') {\n      return {\n        status: STATUS.replySentSheetUpdateFailed,\n        contacted: true,\n        action: ACTION.quoteAutoReply,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    if (sendResult === 'success') {\n      return {\n        status: STATUS.replySent,\n        contacted: true,\n        action: ACTION.quoteAutoReply,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    if (sendResult === 'error') {\n      return {\n        status: STATUS.replyFailed,\n        contacted: false,\n        action: ACTION.quoteAutoReplyFailed,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    return {\n      status: STATUS.received,\n      contacted: false,\n      action: ACTION.quoteReplyPending,\n      send: 'customer',\n      http: 200,\n    };\n  }\n  return {\n    status: STATUS.unrouted,\n    contacted: false,\n    action: ACTION.unroutedNoSend,\n    send: null,\n    http: 200,\n  };\n}\n\nfunction logFailedOutcome() {\n  return {\n    status: STATUS.logFailed,\n    contacted: false,\n    action: ACTION.logFailedNoSend,\n    send: null,\n    http: 502,\n  };\n}\n\nfunction buildQuoteEmail(lead) {\n  return {\n    from: DISPATCH_FROM_EMAIL,\n    to: lead.email,\n    subject: `We received your request (${lead.lead_id})`,\n    text: [\n      `Hi ${lead.name},`,\n      '',\n      `Thanks for contacting ${DEMO_BRAND}. We logged your request and a person will follow up with a quote during business hours (Monday–Friday, 8:00–17:00 ${BUSINESS_TZ}).`,\n      '',\n      `Reference: ${lead.lead_id}`,\n      '',\n      'This message is sample copy from a portfolio demo. It is not a live customer-service system.',\n      '',\n      `— ${DEMO_BRAND} dispatch`,\n    ].join('\\n'),\n  };\n}\n\nfunction buildOwnerAlert(lead) {\n  return {\n    from: DISPATCH_FROM_EMAIL,\n    to: OWNER_ALERT_EMAIL,\n    subject: `[AFTER HOURS EMERGENCY] ${lead.name} (${lead.lead_id})`,\n    text: [\n      'After-hours emergency lead. The customer was not auto-replied.',\n      '',\n      `Lead: ${lead.lead_id}`,\n      `Name: ${lead.name}`,\n      `Email: ${lead.email}`,\n      `Phone: ${lead.phone || '(none)'}`,\n      `Received: ${lead.received_at}`,\n      `Hours: ${lead.business_hours} (${BUSINESS_TZ})`,\n      '',\n      lead.message,\n      '',\n      `Portfolio demo alert. Placeholder recipient ${OWNER_ALERT_EMAIL}.`,\n    ].join('\\n'),\n  };\n}\n\nconst raw = $input.first().json;\nconst payload = raw.body && typeof raw.body === 'object' && !Array.isArray(raw.body) ? raw.body : raw;\nconst lead = classifyLead(payload, { allowDemoClock: ALLOW_DEMO_CLOCK });\nlead.source = raw.headers || raw.webhookUrl ? 'webhook' : 'manual';\nreturn [{ json: lead }];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000006",
+      "name": "Normalize and Classify",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1000001-0000-4000-8000-000000000007-cond",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true,
+                "name": "filter.operator.true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000001-0000-4000-8000-000000000007",
+      "name": "Valid Lead?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1160,
+        480
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "message": "={{ $json.message }}",
+            "message_normalized": "={{ $json.message_normalized }}",
+            "intent": "={{ $json.intent }}",
+            "intent_rule": "={{ $json.intent_rule }}",
+            "business_hours": "={{ $json.business_hours }}",
+            "dedupe_key": "={{ $json.dedupe_key }}",
+            "dedupe_hours": "={{ $json.dedupe_hours }}",
+            "status": "invalid",
+            "contacted": "false",
+            "action_taken": "reject_invalid",
+            "error": "={{ ($json.validation_errors || []).join(\"; \") }}",
+            "duplicate_of": "",
+            "source": "={{ $json.source }}",
+            "rules_version": "={{ $json.rules_version }}"
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message_normalized",
+              "displayName": "message_normalized",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent_rule",
+              "displayName": "intent_rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "business_hours",
+              "displayName": "business_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_key",
+              "displayName": "dedupe_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_hours",
+              "displayName": "dedupe_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duplicate_of",
+              "displayName": "duplicate_of",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rules_version",
+              "displayName": "rules_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000008",
+      "name": "Log Invalid Lead",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1420,
+        760
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {}
+      },
+      "id": "a1000001-0000-4000-8000-000000000009",
+      "name": "Read Leads",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1420,
+        360
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueErrorOutput",
+      "notes": "Fail closed: a read error does not send email.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Generated from demo-lead-response/lib/lead-rules.js (2026-09-29.1).\n// Edit the lib, then run npm run build:workflows.\n/**\n * Lead-response rules for the CKA Consulting portfolio demo.\n * Transparent and local: no LLM and no network calls.\n * The n8n Code nodes are generated from this file. Keep status strings here\n * so the canvas and the tests cannot drift.\n *\n * Classification order (first match wins):\n * 1. SPAM terms → SPAM (logged, never replied to)\n * 2. EMERGENCY terms → EMERGENCY\n * 3. QUOTE terms → QUOTE\n * 4. Anything else that is a valid lead → QUOTE (polite ack, intent_rule default_quote_no_keyword)\n *\n * Business hours: Monday–Friday, 08:00 inclusive to 17:00 exclusive, America/Chicago.\n * Dedupe: same email + normalized message within DEDUPE_HOURS.\n * contacted=true only when a quote auto-reply send succeeds.\n */\n\nconst RULES_VERSION = '2026-09-29.1';\nconst ALLOW_DEMO_CLOCK = true;\nconst BUSINESS_TZ = 'America/Chicago';\nconst BUSINESS_START_HOUR = 8;\nconst BUSINESS_END_HOUR = 17;\nconst DEDUPE_HOURS = 24;\nconst OWNER_ALERT_EMAIL = 'owner@example.com';\nconst DISPATCH_FROM_EMAIL = 'dispatch@example.com';\nconst DEMO_BRAND = 'Northwind Home Services';\n\nconst LEAD_COLUMNS = [\n  'lead_id',\n  'received_at',\n  'name',\n  'email',\n  'phone',\n  'message',\n  'message_normalized',\n  'intent',\n  'intent_rule',\n  'business_hours',\n  'dedupe_key',\n  'dedupe_hours',\n  'status',\n  'contacted',\n  'action_taken',\n  'error',\n  'duplicate_of',\n  'source',\n  'rules_version',\n];\n\nconst STATUS = {\n  invalid: 'invalid',\n  dedupeCheckFailed: 'dedupe_check_failed',\n  duplicateSuppressed: 'duplicate_suppressed',\n  received: 'received',\n  queuedInHours: 'queued_in_hours',\n  spamLogged: 'spam_logged',\n  ownerAlerted: 'owner_alerted',\n  ownerAlertFailed: 'owner_alert_failed',\n  ownerAlertedSheetUpdateFailed: 'owner_alerted_sheet_update_failed',\n  replySent: 'reply_sent',\n  replyFailed: 'reply_failed',\n  replySentSheetUpdateFailed: 'reply_sent_sheet_update_failed',\n  logFailed: 'log_failed',\n  unrouted: 'unrouted',\n};\n\nconst ACTION = {\n  rejectInvalid: 'reject_invalid',\n  failClosedNoSend: 'fail_closed_no_send',\n  suppressDuplicate: 'suppress_duplicate',\n  queueForOwner: 'queue_for_owner',\n  logOnly: 'log_only',\n  alertOwnerPending: 'alert_owner_pending',\n  alertOwner: 'alert_owner',\n  alertOwnerFailed: 'alert_owner_failed',\n  quoteReplyPending: 'quote_reply_pending',\n  quoteAutoReply: 'quote_auto_reply',\n  quoteAutoReplyFailed: 'quote_auto_reply_failed',\n  logFailedNoSend: 'log_failed_no_send',\n  unroutedNoSend: 'unrouted_no_send',\n};\n\nconst EMERGENCY_TERMS = [\n  'emergency',\n  'urgent',\n  'asap',\n  'right now',\n  'no heat',\n  'no hot water',\n  'no power',\n  'power out',\n  'flood',\n  'flooding',\n  'leak',\n  'burst',\n  'gas smell',\n  'smell gas',\n  'sewage',\n  'sewer backup',\n  'sparking',\n  'locked out',\n  'carbon monoxide',\n  'smoke',\n  'fire',\n];\n\nconst SPAM_TERMS = [\n  'unsubscribe',\n  'seo service',\n  'search engine optimization',\n  'backlink',\n  'guest post',\n  'crypto',\n  'bitcoin',\n  'viagra',\n  'casino',\n  'lottery',\n  'you have won',\n  'limited time offer',\n  'click here',\n  'buy now',\n  'work from home',\n  'increase your sales',\n  'lead generation service',\n];\n\nconst QUOTE_TERMS = [\n  'quote',\n  'estimate',\n  'pricing',\n  'price',\n  'how much',\n  'bid',\n  'schedule',\n  'appointment',\n  'install',\n  'replace',\n  'availability',\n];\n\nfunction normalizeMessage(text) {\n  return String(text || '')\n    .toLowerCase()\n    .replace(/https?:\\/\\/\\S+/g, ' ')\n    .replace(/['’]/g, '')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction hasTerm(normalized, term) {\n  const needle = normalizeMessage(term);\n  if (!needle) return false;\n  const escaped = needle.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  return new RegExp(`(?:^|\\\\s)${escaped}(?:\\\\s|$)`).test(normalized);\n}\n\nfunction hasAnyTerm(normalized, terms) {\n  return terms.some((term) => hasTerm(normalized, term));\n}\n\nfunction simpleHash(value) {\n  let hash = 2166136261;\n  const text = String(value);\n  for (let i = 0; i < text.length; i += 1) {\n    hash ^= text.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction businessHours(date) {\n  const parts = new Intl.DateTimeFormat('en-US', {\n    timeZone: BUSINESS_TZ,\n    weekday: 'short',\n    hour: '2-digit',\n    hourCycle: 'h23',\n  }).formatToParts(date);\n  const weekday = parts.find((part) => part.type === 'weekday')?.value;\n  const hour = Number(parts.find((part) => part.type === 'hour')?.value);\n  const weekend = weekday === 'Sat' || weekday === 'Sun';\n  const inHours = !weekend && hour >= BUSINESS_START_HOUR && hour < BUSINESS_END_HOUR;\n  return inHours ? 'in_hours' : 'after_hours';\n}\n\nfunction resolveNow(payload, options) {\n  if (payload.demo_received_at && ALLOW_DEMO_CLOCK && options.allowDemoClock !== false) {\n    const parsed = new Date(payload.demo_received_at);\n    if (!Number.isNaN(parsed.getTime())) {\n      return { now: parsed, demoClock: true };\n    }\n  }\n  const now = options.now ? new Date(options.now) : new Date();\n  return { now, demoClock: false };\n}\n\nfunction classifyLead(payload, options = {}) {\n  const name = String(payload.name || '').trim();\n  const email = String(payload.email || '').trim().toLowerCase();\n  const phone = String(payload.phone || '').trim();\n  const message = String(payload.message || '').trim();\n  const messageNormalized = normalizeMessage(message);\n  const validationErrors = [];\n\n  if (!name) validationErrors.push('name is required');\n  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) validationErrors.push('valid email is required');\n  if (!message) validationErrors.push('message is required');\n\n  let intent = 'QUOTE';\n  let intentRule = 'default_quote_no_keyword';\n  if (hasAnyTerm(messageNormalized, SPAM_TERMS)) {\n    intent = 'SPAM';\n    intentRule = 'spam_term';\n  } else if (hasAnyTerm(messageNormalized, EMERGENCY_TERMS)) {\n    intent = 'EMERGENCY';\n    intentRule = 'emergency_term';\n  } else if (hasAnyTerm(messageNormalized, QUOTE_TERMS)) {\n    intent = 'QUOTE';\n    intentRule = 'quote_term';\n  }\n\n  const { now, demoClock } = resolveNow(payload, options);\n  const hours = businessHours(now);\n  const leadId = `lead_${simpleHash(`${email}|${messageNormalized}|${now.toISOString()}`)}`;\n\n  return {\n    ok: validationErrors.length === 0,\n    validation_errors: validationErrors,\n    lead_id: leadId,\n    received_at: now.toISOString(),\n    name,\n    email,\n    phone,\n    message,\n    message_normalized: messageNormalized,\n    intent,\n    intent_rule: intentRule,\n    business_tz: BUSINESS_TZ,\n    business_hours: hours,\n    dedupe_key: `${email}|${simpleHash(messageNormalized)}`,\n    dedupe_hours: DEDUPE_HOURS,\n    demo_clock: demoClock,\n    rules_version: RULES_VERSION,\n    contacted: false,\n    status: validationErrors.length ? STATUS.invalid : STATUS.received,\n  };\n}\n\n/**\n * Same email and the same normalized message inside the dedupe window.\n * A matching row with an unparseable received_at counts as a duplicate\n * so a clock-format glitch cannot double-send.\n * Returns the earlier lead_id, or '' when the lead is new.\n */\nfunction findDuplicate(lead, rows) {\n  const windowMs = Number(lead.dedupe_hours || DEDUPE_HOURS) * 60 * 60 * 1000;\n  const now = Date.parse(lead.received_at);\n  for (const row of rows || []) {\n    const email = String(row.email || '').trim().toLowerCase();\n    const message = String(row.message_normalized || '');\n    if (!email || email !== lead.email) continue;\n    if (message !== lead.message_normalized) continue;\n    const seenAt = Date.parse(row.received_at);\n    if (Number.isNaN(seenAt) || Number.isNaN(now)) return String(row.lead_id || 'unknown');\n    const age = now - seenAt;\n    if (age >= 0 && age <= windowMs) return String(row.lead_id || 'unknown');\n  }\n  return '';\n}\n\n/**\n * Business decision for one lead. The n8n canvas implements this table.\n * sheetUpdate=failed covers a successful send whose sheet status write failed.\n * contacted stays false unless a quote reply send succeeded.\n */\nfunction routeLead({\n  lead,\n  sheetsAvailable = true,\n  isDuplicate = false,\n  sendResult = 'pending',\n  sheetUpdate = 'ok',\n}) {\n  if (!lead.ok) {\n    return {\n      status: STATUS.invalid,\n      contacted: false,\n      action: ACTION.rejectInvalid,\n      send: null,\n      http: 400,\n    };\n  }\n  if (!sheetsAvailable) {\n    return {\n      status: STATUS.dedupeCheckFailed,\n      contacted: false,\n      action: ACTION.failClosedNoSend,\n      send: null,\n      http: 503,\n    };\n  }\n  if (isDuplicate) {\n    return {\n      status: STATUS.duplicateSuppressed,\n      contacted: false,\n      action: ACTION.suppressDuplicate,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'SPAM') {\n    return {\n      status: STATUS.spamLogged,\n      contacted: false,\n      action: ACTION.logOnly,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'EMERGENCY' && lead.business_hours === 'in_hours') {\n    return {\n      status: STATUS.queuedInHours,\n      contacted: false,\n      action: ACTION.queueForOwner,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'EMERGENCY') {\n    if (sendResult === 'success' && sheetUpdate === 'failed') {\n      return {\n        status: STATUS.ownerAlertedSheetUpdateFailed,\n        contacted: false,\n        action: ACTION.alertOwner,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    if (sendResult === 'success') {\n      return {\n        status: STATUS.ownerAlerted,\n        contacted: false,\n        action: ACTION.alertOwner,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    if (sendResult === 'error') {\n      return {\n        status: STATUS.ownerAlertFailed,\n        contacted: false,\n        action: ACTION.alertOwnerFailed,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    return {\n      status: STATUS.received,\n      contacted: false,\n      action: ACTION.alertOwnerPending,\n      send: 'owner',\n      http: 200,\n    };\n  }\n  if (lead.intent === 'QUOTE') {\n    if (sendResult === 'success' && sheetUpdate === 'failed') {\n      return {\n        status: STATUS.replySentSheetUpdateFailed,\n        contacted: true,\n        action: ACTION.quoteAutoReply,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    if (sendResult === 'success') {\n      return {\n        status: STATUS.replySent,\n        contacted: true,\n        action: ACTION.quoteAutoReply,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    if (sendResult === 'error') {\n      return {\n        status: STATUS.replyFailed,\n        contacted: false,\n        action: ACTION.quoteAutoReplyFailed,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    return {\n      status: STATUS.received,\n      contacted: false,\n      action: ACTION.quoteReplyPending,\n      send: 'customer',\n      http: 200,\n    };\n  }\n  return {\n    status: STATUS.unrouted,\n    contacted: false,\n    action: ACTION.unroutedNoSend,\n    send: null,\n    http: 200,\n  };\n}\n\nfunction logFailedOutcome() {\n  return {\n    status: STATUS.logFailed,\n    contacted: false,\n    action: ACTION.logFailedNoSend,\n    send: null,\n    http: 502,\n  };\n}\n\nfunction buildQuoteEmail(lead) {\n  return {\n    from: DISPATCH_FROM_EMAIL,\n    to: lead.email,\n    subject: `We received your request (${lead.lead_id})`,\n    text: [\n      `Hi ${lead.name},`,\n      '',\n      `Thanks for contacting ${DEMO_BRAND}. We logged your request and a person will follow up with a quote during business hours (Monday–Friday, 8:00–17:00 ${BUSINESS_TZ}).`,\n      '',\n      `Reference: ${lead.lead_id}`,\n      '',\n      'This message is sample copy from a portfolio demo. It is not a live customer-service system.',\n      '',\n      `— ${DEMO_BRAND} dispatch`,\n    ].join('\\n'),\n  };\n}\n\nfunction buildOwnerAlert(lead) {\n  return {\n    from: DISPATCH_FROM_EMAIL,\n    to: OWNER_ALERT_EMAIL,\n    subject: `[AFTER HOURS EMERGENCY] ${lead.name} (${lead.lead_id})`,\n    text: [\n      'After-hours emergency lead. The customer was not auto-replied.',\n      '',\n      `Lead: ${lead.lead_id}`,\n      `Name: ${lead.name}`,\n      `Email: ${lead.email}`,\n      `Phone: ${lead.phone || '(none)'}`,\n      `Received: ${lead.received_at}`,\n      `Hours: ${lead.business_hours} (${BUSINESS_TZ})`,\n      '',\n      lead.message,\n      '',\n      `Portfolio demo alert. Placeholder recipient ${OWNER_ALERT_EMAIL}.`,\n    ].join('\\n'),\n  };\n}\n\nconst lead = $('Normalize and Classify').first().json;\nconst rows = $input.all().map((item) => item.json).filter((row) => row && row.email);\nconst duplicateOf = findDuplicate(lead, rows);\nreturn [{ json: { ...lead, is_duplicate: Boolean(duplicateOf), duplicate_of: duplicateOf || '' } }];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000010",
+      "name": "Dedupe Against Sheet",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1000001-0000-4000-8000-000000000011-cond",
+              "leftValue": "={{ $json.is_duplicate }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true,
+                "name": "filter.operator.true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000001-0000-4000-8000-000000000011",
+      "name": "Duplicate?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1960,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "message": "={{ $json.message }}",
+            "message_normalized": "={{ $json.message_normalized }}",
+            "intent": "={{ $json.intent }}",
+            "intent_rule": "={{ $json.intent_rule }}",
+            "business_hours": "={{ $json.business_hours }}",
+            "dedupe_key": "={{ $json.dedupe_key }}",
+            "dedupe_hours": "={{ $json.dedupe_hours }}",
+            "status": "duplicate_suppressed",
+            "contacted": "false",
+            "action_taken": "suppress_duplicate",
+            "error": "",
+            "duplicate_of": "={{ $json.duplicate_of }}",
+            "source": "={{ $json.source }}",
+            "rules_version": "={{ $json.rules_version }}"
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message_normalized",
+              "displayName": "message_normalized",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent_rule",
+              "displayName": "intent_rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "business_hours",
+              "displayName": "business_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_key",
+              "displayName": "dedupe_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_hours",
+              "displayName": "dedupe_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duplicate_of",
+              "displayName": "duplicate_of",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rules_version",
+              "displayName": "rules_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000012",
+      "name": "Log Duplicate",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2220,
+        560
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a1000001-0000-4000-8000-000000000013-EMERGENCY",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "EMERGENCY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "EMERGENCY"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a1000001-0000-4000-8000-000000000013-QUOTE",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "QUOTE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "QUOTE"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a1000001-0000-4000-8000-000000000013-SPAM",
+                    "leftValue": "={{ $json.intent }}",
+                    "rightValue": "SPAM",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SPAM"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000013",
+      "name": "Route by Intent",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        2220,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1000001-0000-4000-8000-000000000014-cond",
+              "leftValue": "={{ $json.business_hours }}",
+              "rightValue": "after_hours",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000001-0000-4000-8000-000000000014",
+      "name": "After Hours?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2500,
+        40
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "message": "={{ $json.message }}",
+            "message_normalized": "={{ $json.message_normalized }}",
+            "intent": "={{ $json.intent }}",
+            "intent_rule": "={{ $json.intent_rule }}",
+            "business_hours": "={{ $json.business_hours }}",
+            "dedupe_key": "={{ $json.dedupe_key }}",
+            "dedupe_hours": "={{ $json.dedupe_hours }}",
+            "status": "received",
+            "contacted": "false",
+            "action_taken": "alert_owner_pending",
+            "error": "",
+            "duplicate_of": "",
+            "source": "={{ $json.source }}",
+            "rules_version": "={{ $json.rules_version }}"
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message_normalized",
+              "displayName": "message_normalized",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent_rule",
+              "displayName": "intent_rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "business_hours",
+              "displayName": "business_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_key",
+              "displayName": "dedupe_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_hours",
+              "displayName": "dedupe_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duplicate_of",
+              "displayName": "duplicate_of",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rules_version",
+              "displayName": "rules_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000015",
+      "name": "Log Emergency Pending",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2760,
+        -40
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Generated from demo-lead-response/lib/lead-rules.js (2026-09-29.1).\n// Edit the lib, then run npm run build:workflows.\n/**\n * Lead-response rules for the CKA Consulting portfolio demo.\n * Transparent and local: no LLM and no network calls.\n * The n8n Code nodes are generated from this file. Keep status strings here\n * so the canvas and the tests cannot drift.\n *\n * Classification order (first match wins):\n * 1. SPAM terms → SPAM (logged, never replied to)\n * 2. EMERGENCY terms → EMERGENCY\n * 3. QUOTE terms → QUOTE\n * 4. Anything else that is a valid lead → QUOTE (polite ack, intent_rule default_quote_no_keyword)\n *\n * Business hours: Monday–Friday, 08:00 inclusive to 17:00 exclusive, America/Chicago.\n * Dedupe: same email + normalized message within DEDUPE_HOURS.\n * contacted=true only when a quote auto-reply send succeeds.\n */\n\nconst RULES_VERSION = '2026-09-29.1';\nconst ALLOW_DEMO_CLOCK = true;\nconst BUSINESS_TZ = 'America/Chicago';\nconst BUSINESS_START_HOUR = 8;\nconst BUSINESS_END_HOUR = 17;\nconst DEDUPE_HOURS = 24;\nconst OWNER_ALERT_EMAIL = 'owner@example.com';\nconst DISPATCH_FROM_EMAIL = 'dispatch@example.com';\nconst DEMO_BRAND = 'Northwind Home Services';\n\nconst LEAD_COLUMNS = [\n  'lead_id',\n  'received_at',\n  'name',\n  'email',\n  'phone',\n  'message',\n  'message_normalized',\n  'intent',\n  'intent_rule',\n  'business_hours',\n  'dedupe_key',\n  'dedupe_hours',\n  'status',\n  'contacted',\n  'action_taken',\n  'error',\n  'duplicate_of',\n  'source',\n  'rules_version',\n];\n\nconst STATUS = {\n  invalid: 'invalid',\n  dedupeCheckFailed: 'dedupe_check_failed',\n  duplicateSuppressed: 'duplicate_suppressed',\n  received: 'received',\n  queuedInHours: 'queued_in_hours',\n  spamLogged: 'spam_logged',\n  ownerAlerted: 'owner_alerted',\n  ownerAlertFailed: 'owner_alert_failed',\n  ownerAlertedSheetUpdateFailed: 'owner_alerted_sheet_update_failed',\n  replySent: 'reply_sent',\n  replyFailed: 'reply_failed',\n  replySentSheetUpdateFailed: 'reply_sent_sheet_update_failed',\n  logFailed: 'log_failed',\n  unrouted: 'unrouted',\n};\n\nconst ACTION = {\n  rejectInvalid: 'reject_invalid',\n  failClosedNoSend: 'fail_closed_no_send',\n  suppressDuplicate: 'suppress_duplicate',\n  queueForOwner: 'queue_for_owner',\n  logOnly: 'log_only',\n  alertOwnerPending: 'alert_owner_pending',\n  alertOwner: 'alert_owner',\n  alertOwnerFailed: 'alert_owner_failed',\n  quoteReplyPending: 'quote_reply_pending',\n  quoteAutoReply: 'quote_auto_reply',\n  quoteAutoReplyFailed: 'quote_auto_reply_failed',\n  logFailedNoSend: 'log_failed_no_send',\n  unroutedNoSend: 'unrouted_no_send',\n};\n\nconst EMERGENCY_TERMS = [\n  'emergency',\n  'urgent',\n  'asap',\n  'right now',\n  'no heat',\n  'no hot water',\n  'no power',\n  'power out',\n  'flood',\n  'flooding',\n  'leak',\n  'burst',\n  'gas smell',\n  'smell gas',\n  'sewage',\n  'sewer backup',\n  'sparking',\n  'locked out',\n  'carbon monoxide',\n  'smoke',\n  'fire',\n];\n\nconst SPAM_TERMS = [\n  'unsubscribe',\n  'seo service',\n  'search engine optimization',\n  'backlink',\n  'guest post',\n  'crypto',\n  'bitcoin',\n  'viagra',\n  'casino',\n  'lottery',\n  'you have won',\n  'limited time offer',\n  'click here',\n  'buy now',\n  'work from home',\n  'increase your sales',\n  'lead generation service',\n];\n\nconst QUOTE_TERMS = [\n  'quote',\n  'estimate',\n  'pricing',\n  'price',\n  'how much',\n  'bid',\n  'schedule',\n  'appointment',\n  'install',\n  'replace',\n  'availability',\n];\n\nfunction normalizeMessage(text) {\n  return String(text || '')\n    .toLowerCase()\n    .replace(/https?:\\/\\/\\S+/g, ' ')\n    .replace(/['’]/g, '')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction hasTerm(normalized, term) {\n  const needle = normalizeMessage(term);\n  if (!needle) return false;\n  const escaped = needle.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  return new RegExp(`(?:^|\\\\s)${escaped}(?:\\\\s|$)`).test(normalized);\n}\n\nfunction hasAnyTerm(normalized, terms) {\n  return terms.some((term) => hasTerm(normalized, term));\n}\n\nfunction simpleHash(value) {\n  let hash = 2166136261;\n  const text = String(value);\n  for (let i = 0; i < text.length; i += 1) {\n    hash ^= text.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction businessHours(date) {\n  const parts = new Intl.DateTimeFormat('en-US', {\n    timeZone: BUSINESS_TZ,\n    weekday: 'short',\n    hour: '2-digit',\n    hourCycle: 'h23',\n  }).formatToParts(date);\n  const weekday = parts.find((part) => part.type === 'weekday')?.value;\n  const hour = Number(parts.find((part) => part.type === 'hour')?.value);\n  const weekend = weekday === 'Sat' || weekday === 'Sun';\n  const inHours = !weekend && hour >= BUSINESS_START_HOUR && hour < BUSINESS_END_HOUR;\n  return inHours ? 'in_hours' : 'after_hours';\n}\n\nfunction resolveNow(payload, options) {\n  if (payload.demo_received_at && ALLOW_DEMO_CLOCK && options.allowDemoClock !== false) {\n    const parsed = new Date(payload.demo_received_at);\n    if (!Number.isNaN(parsed.getTime())) {\n      return { now: parsed, demoClock: true };\n    }\n  }\n  const now = options.now ? new Date(options.now) : new Date();\n  return { now, demoClock: false };\n}\n\nfunction classifyLead(payload, options = {}) {\n  const name = String(payload.name || '').trim();\n  const email = String(payload.email || '').trim().toLowerCase();\n  const phone = String(payload.phone || '').trim();\n  const message = String(payload.message || '').trim();\n  const messageNormalized = normalizeMessage(message);\n  const validationErrors = [];\n\n  if (!name) validationErrors.push('name is required');\n  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) validationErrors.push('valid email is required');\n  if (!message) validationErrors.push('message is required');\n\n  let intent = 'QUOTE';\n  let intentRule = 'default_quote_no_keyword';\n  if (hasAnyTerm(messageNormalized, SPAM_TERMS)) {\n    intent = 'SPAM';\n    intentRule = 'spam_term';\n  } else if (hasAnyTerm(messageNormalized, EMERGENCY_TERMS)) {\n    intent = 'EMERGENCY';\n    intentRule = 'emergency_term';\n  } else if (hasAnyTerm(messageNormalized, QUOTE_TERMS)) {\n    intent = 'QUOTE';\n    intentRule = 'quote_term';\n  }\n\n  const { now, demoClock } = resolveNow(payload, options);\n  const hours = businessHours(now);\n  const leadId = `lead_${simpleHash(`${email}|${messageNormalized}|${now.toISOString()}`)}`;\n\n  return {\n    ok: validationErrors.length === 0,\n    validation_errors: validationErrors,\n    lead_id: leadId,\n    received_at: now.toISOString(),\n    name,\n    email,\n    phone,\n    message,\n    message_normalized: messageNormalized,\n    intent,\n    intent_rule: intentRule,\n    business_tz: BUSINESS_TZ,\n    business_hours: hours,\n    dedupe_key: `${email}|${simpleHash(messageNormalized)}`,\n    dedupe_hours: DEDUPE_HOURS,\n    demo_clock: demoClock,\n    rules_version: RULES_VERSION,\n    contacted: false,\n    status: validationErrors.length ? STATUS.invalid : STATUS.received,\n  };\n}\n\n/**\n * Same email and the same normalized message inside the dedupe window.\n * A matching row with an unparseable received_at counts as a duplicate\n * so a clock-format glitch cannot double-send.\n * Returns the earlier lead_id, or '' when the lead is new.\n */\nfunction findDuplicate(lead, rows) {\n  const windowMs = Number(lead.dedupe_hours || DEDUPE_HOURS) * 60 * 60 * 1000;\n  const now = Date.parse(lead.received_at);\n  for (const row of rows || []) {\n    const email = String(row.email || '').trim().toLowerCase();\n    const message = String(row.message_normalized || '');\n    if (!email || email !== lead.email) continue;\n    if (message !== lead.message_normalized) continue;\n    const seenAt = Date.parse(row.received_at);\n    if (Number.isNaN(seenAt) || Number.isNaN(now)) return String(row.lead_id || 'unknown');\n    const age = now - seenAt;\n    if (age >= 0 && age <= windowMs) return String(row.lead_id || 'unknown');\n  }\n  return '';\n}\n\n/**\n * Business decision for one lead. The n8n canvas implements this table.\n * sheetUpdate=failed covers a successful send whose sheet status write failed.\n * contacted stays false unless a quote reply send succeeded.\n */\nfunction routeLead({\n  lead,\n  sheetsAvailable = true,\n  isDuplicate = false,\n  sendResult = 'pending',\n  sheetUpdate = 'ok',\n}) {\n  if (!lead.ok) {\n    return {\n      status: STATUS.invalid,\n      contacted: false,\n      action: ACTION.rejectInvalid,\n      send: null,\n      http: 400,\n    };\n  }\n  if (!sheetsAvailable) {\n    return {\n      status: STATUS.dedupeCheckFailed,\n      contacted: false,\n      action: ACTION.failClosedNoSend,\n      send: null,\n      http: 503,\n    };\n  }\n  if (isDuplicate) {\n    return {\n      status: STATUS.duplicateSuppressed,\n      contacted: false,\n      action: ACTION.suppressDuplicate,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'SPAM') {\n    return {\n      status: STATUS.spamLogged,\n      contacted: false,\n      action: ACTION.logOnly,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'EMERGENCY' && lead.business_hours === 'in_hours') {\n    return {\n      status: STATUS.queuedInHours,\n      contacted: false,\n      action: ACTION.queueForOwner,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'EMERGENCY') {\n    if (sendResult === 'success' && sheetUpdate === 'failed') {\n      return {\n        status: STATUS.ownerAlertedSheetUpdateFailed,\n        contacted: false,\n        action: ACTION.alertOwner,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    if (sendResult === 'success') {\n      return {\n        status: STATUS.ownerAlerted,\n        contacted: false,\n        action: ACTION.alertOwner,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    if (sendResult === 'error') {\n      return {\n        status: STATUS.ownerAlertFailed,\n        contacted: false,\n        action: ACTION.alertOwnerFailed,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    return {\n      status: STATUS.received,\n      contacted: false,\n      action: ACTION.alertOwnerPending,\n      send: 'owner',\n      http: 200,\n    };\n  }\n  if (lead.intent === 'QUOTE') {\n    if (sendResult === 'success' && sheetUpdate === 'failed') {\n      return {\n        status: STATUS.replySentSheetUpdateFailed,\n        contacted: true,\n        action: ACTION.quoteAutoReply,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    if (sendResult === 'success') {\n      return {\n        status: STATUS.replySent,\n        contacted: true,\n        action: ACTION.quoteAutoReply,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    if (sendResult === 'error') {\n      return {\n        status: STATUS.replyFailed,\n        contacted: false,\n        action: ACTION.quoteAutoReplyFailed,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    return {\n      status: STATUS.received,\n      contacted: false,\n      action: ACTION.quoteReplyPending,\n      send: 'customer',\n      http: 200,\n    };\n  }\n  return {\n    status: STATUS.unrouted,\n    contacted: false,\n    action: ACTION.unroutedNoSend,\n    send: null,\n    http: 200,\n  };\n}\n\nfunction logFailedOutcome() {\n  return {\n    status: STATUS.logFailed,\n    contacted: false,\n    action: ACTION.logFailedNoSend,\n    send: null,\n    http: 502,\n  };\n}\n\nfunction buildQuoteEmail(lead) {\n  return {\n    from: DISPATCH_FROM_EMAIL,\n    to: lead.email,\n    subject: `We received your request (${lead.lead_id})`,\n    text: [\n      `Hi ${lead.name},`,\n      '',\n      `Thanks for contacting ${DEMO_BRAND}. We logged your request and a person will follow up with a quote during business hours (Monday–Friday, 8:00–17:00 ${BUSINESS_TZ}).`,\n      '',\n      `Reference: ${lead.lead_id}`,\n      '',\n      'This message is sample copy from a portfolio demo. It is not a live customer-service system.',\n      '',\n      `— ${DEMO_BRAND} dispatch`,\n    ].join('\\n'),\n  };\n}\n\nfunction buildOwnerAlert(lead) {\n  return {\n    from: DISPATCH_FROM_EMAIL,\n    to: OWNER_ALERT_EMAIL,\n    subject: `[AFTER HOURS EMERGENCY] ${lead.name} (${lead.lead_id})`,\n    text: [\n      'After-hours emergency lead. The customer was not auto-replied.',\n      '',\n      `Lead: ${lead.lead_id}`,\n      `Name: ${lead.name}`,\n      `Email: ${lead.email}`,\n      `Phone: ${lead.phone || '(none)'}`,\n      `Received: ${lead.received_at}`,\n      `Hours: ${lead.business_hours} (${BUSINESS_TZ})`,\n      '',\n      lead.message,\n      '',\n      `Portfolio demo alert. Placeholder recipient ${OWNER_ALERT_EMAIL}.`,\n    ].join('\\n'),\n  };\n}\n\nconst lead = $('Dedupe Against Sheet').first().json;\nconst email = buildOwnerAlert(lead);\nreturn [{ json: { ...lead, from: email.from, to: email.to, subject: email.subject, text: email.text } }];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000016",
+      "name": "Prepare Owner Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3020,
+        -40
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "email",
+        "operation": "send",
+        "fromEmail": "={{ $json.from }}",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000017",
+      "name": "Email Owner Alert",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        3280,
+        -40
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_WITH_SMTP_CREDENTIAL_ID",
+          "name": "CKA Demo — SMTP"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Placeholder addresses only. dispatch@example.com and owner@example.com are not real inboxes."
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('Dedupe Against Sheet').first().json.lead_id }}",
+            "status": "owner_alerted",
+            "contacted": "false",
+            "action_taken": "alert_owner",
+            "error": ""
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false,
+          "matchingColumns": [
+            "lead_id"
+          ]
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000018",
+      "name": "Mark Owner Alerted",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3540,
+        -160
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('Dedupe Against Sheet').first().json.lead_id }}",
+            "status": "owner_alert_failed",
+            "contacted": "false",
+            "action_taken": "alert_owner_failed",
+            "error": "={{ typeof $json.error === \"string\" ? $json.error : ($json.error && $json.error.message) || \"send_failed\" }}"
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false,
+          "matchingColumns": [
+            "lead_id"
+          ]
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000019",
+      "name": "Mark Owner Alert Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3540,
+        120
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "message": "={{ $json.message }}",
+            "message_normalized": "={{ $json.message_normalized }}",
+            "intent": "={{ $json.intent }}",
+            "intent_rule": "={{ $json.intent_rule }}",
+            "business_hours": "={{ $json.business_hours }}",
+            "dedupe_key": "={{ $json.dedupe_key }}",
+            "dedupe_hours": "={{ $json.dedupe_hours }}",
+            "status": "queued_in_hours",
+            "contacted": "false",
+            "action_taken": "queue_for_owner",
+            "error": "",
+            "duplicate_of": "",
+            "source": "={{ $json.source }}",
+            "rules_version": "={{ $json.rules_version }}"
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message_normalized",
+              "displayName": "message_normalized",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent_rule",
+              "displayName": "intent_rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "business_hours",
+              "displayName": "business_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_key",
+              "displayName": "dedupe_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_hours",
+              "displayName": "dedupe_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duplicate_of",
+              "displayName": "duplicate_of",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rules_version",
+              "displayName": "rules_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000020",
+      "name": "Log Emergency In Hours",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2760,
+        200
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "message": "={{ $json.message }}",
+            "message_normalized": "={{ $json.message_normalized }}",
+            "intent": "={{ $json.intent }}",
+            "intent_rule": "={{ $json.intent_rule }}",
+            "business_hours": "={{ $json.business_hours }}",
+            "dedupe_key": "={{ $json.dedupe_key }}",
+            "dedupe_hours": "={{ $json.dedupe_hours }}",
+            "status": "received",
+            "contacted": "false",
+            "action_taken": "quote_reply_pending",
+            "error": "",
+            "duplicate_of": "",
+            "source": "={{ $json.source }}",
+            "rules_version": "={{ $json.rules_version }}"
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message_normalized",
+              "displayName": "message_normalized",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent_rule",
+              "displayName": "intent_rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "business_hours",
+              "displayName": "business_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_key",
+              "displayName": "dedupe_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_hours",
+              "displayName": "dedupe_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duplicate_of",
+              "displayName": "duplicate_of",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rules_version",
+              "displayName": "rules_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000021",
+      "name": "Log Quote Pending",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2500,
+        400
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Generated from demo-lead-response/lib/lead-rules.js (2026-09-29.1).\n// Edit the lib, then run npm run build:workflows.\n/**\n * Lead-response rules for the CKA Consulting portfolio demo.\n * Transparent and local: no LLM and no network calls.\n * The n8n Code nodes are generated from this file. Keep status strings here\n * so the canvas and the tests cannot drift.\n *\n * Classification order (first match wins):\n * 1. SPAM terms → SPAM (logged, never replied to)\n * 2. EMERGENCY terms → EMERGENCY\n * 3. QUOTE terms → QUOTE\n * 4. Anything else that is a valid lead → QUOTE (polite ack, intent_rule default_quote_no_keyword)\n *\n * Business hours: Monday–Friday, 08:00 inclusive to 17:00 exclusive, America/Chicago.\n * Dedupe: same email + normalized message within DEDUPE_HOURS.\n * contacted=true only when a quote auto-reply send succeeds.\n */\n\nconst RULES_VERSION = '2026-09-29.1';\nconst ALLOW_DEMO_CLOCK = true;\nconst BUSINESS_TZ = 'America/Chicago';\nconst BUSINESS_START_HOUR = 8;\nconst BUSINESS_END_HOUR = 17;\nconst DEDUPE_HOURS = 24;\nconst OWNER_ALERT_EMAIL = 'owner@example.com';\nconst DISPATCH_FROM_EMAIL = 'dispatch@example.com';\nconst DEMO_BRAND = 'Northwind Home Services';\n\nconst LEAD_COLUMNS = [\n  'lead_id',\n  'received_at',\n  'name',\n  'email',\n  'phone',\n  'message',\n  'message_normalized',\n  'intent',\n  'intent_rule',\n  'business_hours',\n  'dedupe_key',\n  'dedupe_hours',\n  'status',\n  'contacted',\n  'action_taken',\n  'error',\n  'duplicate_of',\n  'source',\n  'rules_version',\n];\n\nconst STATUS = {\n  invalid: 'invalid',\n  dedupeCheckFailed: 'dedupe_check_failed',\n  duplicateSuppressed: 'duplicate_suppressed',\n  received: 'received',\n  queuedInHours: 'queued_in_hours',\n  spamLogged: 'spam_logged',\n  ownerAlerted: 'owner_alerted',\n  ownerAlertFailed: 'owner_alert_failed',\n  ownerAlertedSheetUpdateFailed: 'owner_alerted_sheet_update_failed',\n  replySent: 'reply_sent',\n  replyFailed: 'reply_failed',\n  replySentSheetUpdateFailed: 'reply_sent_sheet_update_failed',\n  logFailed: 'log_failed',\n  unrouted: 'unrouted',\n};\n\nconst ACTION = {\n  rejectInvalid: 'reject_invalid',\n  failClosedNoSend: 'fail_closed_no_send',\n  suppressDuplicate: 'suppress_duplicate',\n  queueForOwner: 'queue_for_owner',\n  logOnly: 'log_only',\n  alertOwnerPending: 'alert_owner_pending',\n  alertOwner: 'alert_owner',\n  alertOwnerFailed: 'alert_owner_failed',\n  quoteReplyPending: 'quote_reply_pending',\n  quoteAutoReply: 'quote_auto_reply',\n  quoteAutoReplyFailed: 'quote_auto_reply_failed',\n  logFailedNoSend: 'log_failed_no_send',\n  unroutedNoSend: 'unrouted_no_send',\n};\n\nconst EMERGENCY_TERMS = [\n  'emergency',\n  'urgent',\n  'asap',\n  'right now',\n  'no heat',\n  'no hot water',\n  'no power',\n  'power out',\n  'flood',\n  'flooding',\n  'leak',\n  'burst',\n  'gas smell',\n  'smell gas',\n  'sewage',\n  'sewer backup',\n  'sparking',\n  'locked out',\n  'carbon monoxide',\n  'smoke',\n  'fire',\n];\n\nconst SPAM_TERMS = [\n  'unsubscribe',\n  'seo service',\n  'search engine optimization',\n  'backlink',\n  'guest post',\n  'crypto',\n  'bitcoin',\n  'viagra',\n  'casino',\n  'lottery',\n  'you have won',\n  'limited time offer',\n  'click here',\n  'buy now',\n  'work from home',\n  'increase your sales',\n  'lead generation service',\n];\n\nconst QUOTE_TERMS = [\n  'quote',\n  'estimate',\n  'pricing',\n  'price',\n  'how much',\n  'bid',\n  'schedule',\n  'appointment',\n  'install',\n  'replace',\n  'availability',\n];\n\nfunction normalizeMessage(text) {\n  return String(text || '')\n    .toLowerCase()\n    .replace(/https?:\\/\\/\\S+/g, ' ')\n    .replace(/['’]/g, '')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction hasTerm(normalized, term) {\n  const needle = normalizeMessage(term);\n  if (!needle) return false;\n  const escaped = needle.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  return new RegExp(`(?:^|\\\\s)${escaped}(?:\\\\s|$)`).test(normalized);\n}\n\nfunction hasAnyTerm(normalized, terms) {\n  return terms.some((term) => hasTerm(normalized, term));\n}\n\nfunction simpleHash(value) {\n  let hash = 2166136261;\n  const text = String(value);\n  for (let i = 0; i < text.length; i += 1) {\n    hash ^= text.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction businessHours(date) {\n  const parts = new Intl.DateTimeFormat('en-US', {\n    timeZone: BUSINESS_TZ,\n    weekday: 'short',\n    hour: '2-digit',\n    hourCycle: 'h23',\n  }).formatToParts(date);\n  const weekday = parts.find((part) => part.type === 'weekday')?.value;\n  const hour = Number(parts.find((part) => part.type === 'hour')?.value);\n  const weekend = weekday === 'Sat' || weekday === 'Sun';\n  const inHours = !weekend && hour >= BUSINESS_START_HOUR && hour < BUSINESS_END_HOUR;\n  return inHours ? 'in_hours' : 'after_hours';\n}\n\nfunction resolveNow(payload, options) {\n  if (payload.demo_received_at && ALLOW_DEMO_CLOCK && options.allowDemoClock !== false) {\n    const parsed = new Date(payload.demo_received_at);\n    if (!Number.isNaN(parsed.getTime())) {\n      return { now: parsed, demoClock: true };\n    }\n  }\n  const now = options.now ? new Date(options.now) : new Date();\n  return { now, demoClock: false };\n}\n\nfunction classifyLead(payload, options = {}) {\n  const name = String(payload.name || '').trim();\n  const email = String(payload.email || '').trim().toLowerCase();\n  const phone = String(payload.phone || '').trim();\n  const message = String(payload.message || '').trim();\n  const messageNormalized = normalizeMessage(message);\n  const validationErrors = [];\n\n  if (!name) validationErrors.push('name is required');\n  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) validationErrors.push('valid email is required');\n  if (!message) validationErrors.push('message is required');\n\n  let intent = 'QUOTE';\n  let intentRule = 'default_quote_no_keyword';\n  if (hasAnyTerm(messageNormalized, SPAM_TERMS)) {\n    intent = 'SPAM';\n    intentRule = 'spam_term';\n  } else if (hasAnyTerm(messageNormalized, EMERGENCY_TERMS)) {\n    intent = 'EMERGENCY';\n    intentRule = 'emergency_term';\n  } else if (hasAnyTerm(messageNormalized, QUOTE_TERMS)) {\n    intent = 'QUOTE';\n    intentRule = 'quote_term';\n  }\n\n  const { now, demoClock } = resolveNow(payload, options);\n  const hours = businessHours(now);\n  const leadId = `lead_${simpleHash(`${email}|${messageNormalized}|${now.toISOString()}`)}`;\n\n  return {\n    ok: validationErrors.length === 0,\n    validation_errors: validationErrors,\n    lead_id: leadId,\n    received_at: now.toISOString(),\n    name,\n    email,\n    phone,\n    message,\n    message_normalized: messageNormalized,\n    intent,\n    intent_rule: intentRule,\n    business_tz: BUSINESS_TZ,\n    business_hours: hours,\n    dedupe_key: `${email}|${simpleHash(messageNormalized)}`,\n    dedupe_hours: DEDUPE_HOURS,\n    demo_clock: demoClock,\n    rules_version: RULES_VERSION,\n    contacted: false,\n    status: validationErrors.length ? STATUS.invalid : STATUS.received,\n  };\n}\n\n/**\n * Same email and the same normalized message inside the dedupe window.\n * A matching row with an unparseable received_at counts as a duplicate\n * so a clock-format glitch cannot double-send.\n * Returns the earlier lead_id, or '' when the lead is new.\n */\nfunction findDuplicate(lead, rows) {\n  const windowMs = Number(lead.dedupe_hours || DEDUPE_HOURS) * 60 * 60 * 1000;\n  const now = Date.parse(lead.received_at);\n  for (const row of rows || []) {\n    const email = String(row.email || '').trim().toLowerCase();\n    const message = String(row.message_normalized || '');\n    if (!email || email !== lead.email) continue;\n    if (message !== lead.message_normalized) continue;\n    const seenAt = Date.parse(row.received_at);\n    if (Number.isNaN(seenAt) || Number.isNaN(now)) return String(row.lead_id || 'unknown');\n    const age = now - seenAt;\n    if (age >= 0 && age <= windowMs) return String(row.lead_id || 'unknown');\n  }\n  return '';\n}\n\n/**\n * Business decision for one lead. The n8n canvas implements this table.\n * sheetUpdate=failed covers a successful send whose sheet status write failed.\n * contacted stays false unless a quote reply send succeeded.\n */\nfunction routeLead({\n  lead,\n  sheetsAvailable = true,\n  isDuplicate = false,\n  sendResult = 'pending',\n  sheetUpdate = 'ok',\n}) {\n  if (!lead.ok) {\n    return {\n      status: STATUS.invalid,\n      contacted: false,\n      action: ACTION.rejectInvalid,\n      send: null,\n      http: 400,\n    };\n  }\n  if (!sheetsAvailable) {\n    return {\n      status: STATUS.dedupeCheckFailed,\n      contacted: false,\n      action: ACTION.failClosedNoSend,\n      send: null,\n      http: 503,\n    };\n  }\n  if (isDuplicate) {\n    return {\n      status: STATUS.duplicateSuppressed,\n      contacted: false,\n      action: ACTION.suppressDuplicate,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'SPAM') {\n    return {\n      status: STATUS.spamLogged,\n      contacted: false,\n      action: ACTION.logOnly,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'EMERGENCY' && lead.business_hours === 'in_hours') {\n    return {\n      status: STATUS.queuedInHours,\n      contacted: false,\n      action: ACTION.queueForOwner,\n      send: null,\n      http: 200,\n    };\n  }\n  if (lead.intent === 'EMERGENCY') {\n    if (sendResult === 'success' && sheetUpdate === 'failed') {\n      return {\n        status: STATUS.ownerAlertedSheetUpdateFailed,\n        contacted: false,\n        action: ACTION.alertOwner,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    if (sendResult === 'success') {\n      return {\n        status: STATUS.ownerAlerted,\n        contacted: false,\n        action: ACTION.alertOwner,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    if (sendResult === 'error') {\n      return {\n        status: STATUS.ownerAlertFailed,\n        contacted: false,\n        action: ACTION.alertOwnerFailed,\n        send: 'owner',\n        http: 200,\n      };\n    }\n    return {\n      status: STATUS.received,\n      contacted: false,\n      action: ACTION.alertOwnerPending,\n      send: 'owner',\n      http: 200,\n    };\n  }\n  if (lead.intent === 'QUOTE') {\n    if (sendResult === 'success' && sheetUpdate === 'failed') {\n      return {\n        status: STATUS.replySentSheetUpdateFailed,\n        contacted: true,\n        action: ACTION.quoteAutoReply,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    if (sendResult === 'success') {\n      return {\n        status: STATUS.replySent,\n        contacted: true,\n        action: ACTION.quoteAutoReply,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    if (sendResult === 'error') {\n      return {\n        status: STATUS.replyFailed,\n        contacted: false,\n        action: ACTION.quoteAutoReplyFailed,\n        send: 'customer',\n        http: 200,\n      };\n    }\n    return {\n      status: STATUS.received,\n      contacted: false,\n      action: ACTION.quoteReplyPending,\n      send: 'customer',\n      http: 200,\n    };\n  }\n  return {\n    status: STATUS.unrouted,\n    contacted: false,\n    action: ACTION.unroutedNoSend,\n    send: null,\n    http: 200,\n  };\n}\n\nfunction logFailedOutcome() {\n  return {\n    status: STATUS.logFailed,\n    contacted: false,\n    action: ACTION.logFailedNoSend,\n    send: null,\n    http: 502,\n  };\n}\n\nfunction buildQuoteEmail(lead) {\n  return {\n    from: DISPATCH_FROM_EMAIL,\n    to: lead.email,\n    subject: `We received your request (${lead.lead_id})`,\n    text: [\n      `Hi ${lead.name},`,\n      '',\n      `Thanks for contacting ${DEMO_BRAND}. We logged your request and a person will follow up with a quote during business hours (Monday–Friday, 8:00–17:00 ${BUSINESS_TZ}).`,\n      '',\n      `Reference: ${lead.lead_id}`,\n      '',\n      'This message is sample copy from a portfolio demo. It is not a live customer-service system.',\n      '',\n      `— ${DEMO_BRAND} dispatch`,\n    ].join('\\n'),\n  };\n}\n\nfunction buildOwnerAlert(lead) {\n  return {\n    from: DISPATCH_FROM_EMAIL,\n    to: OWNER_ALERT_EMAIL,\n    subject: `[AFTER HOURS EMERGENCY] ${lead.name} (${lead.lead_id})`,\n    text: [\n      'After-hours emergency lead. The customer was not auto-replied.',\n      '',\n      `Lead: ${lead.lead_id}`,\n      `Name: ${lead.name}`,\n      `Email: ${lead.email}`,\n      `Phone: ${lead.phone || '(none)'}`,\n      `Received: ${lead.received_at}`,\n      `Hours: ${lead.business_hours} (${BUSINESS_TZ})`,\n      '',\n      lead.message,\n      '',\n      `Portfolio demo alert. Placeholder recipient ${OWNER_ALERT_EMAIL}.`,\n    ].join('\\n'),\n  };\n}\n\nconst lead = $('Dedupe Against Sheet').first().json;\nconst email = buildQuoteEmail(lead);\nreturn [{ json: { ...lead, from: email.from, to: email.to, subject: email.subject, text: email.text } }];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000022",
+      "name": "Prepare Quote Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2760,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "email",
+        "operation": "send",
+        "fromEmail": "={{ $json.from }}",
+        "toEmail": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "emailFormat": "text",
+        "text": "={{ $json.text }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000023",
+      "name": "Email Quote Reply",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        3020,
+        400
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "REPLACE_WITH_SMTP_CREDENTIAL_ID",
+          "name": "CKA Demo — SMTP"
+        }
+      },
+      "onError": "continueErrorOutput",
+      "notes": "Placeholder addresses only. dispatch@example.com and owner@example.com are not real inboxes."
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('Dedupe Against Sheet').first().json.lead_id }}",
+            "status": "reply_sent",
+            "contacted": "true",
+            "action_taken": "quote_auto_reply",
+            "error": ""
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false,
+          "matchingColumns": [
+            "lead_id"
+          ]
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000024",
+      "name": "Mark Quote Replied",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3280,
+        300
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $('Dedupe Against Sheet').first().json.lead_id }}",
+            "status": "reply_failed",
+            "contacted": "false",
+            "action_taken": "quote_auto_reply_failed",
+            "error": "={{ typeof $json.error === \"string\" ? $json.error : ($json.error && $json.error.message) || \"send_failed\" }}"
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false,
+          "matchingColumns": [
+            "lead_id"
+          ]
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000025",
+      "name": "Mark Quote Reply Failed",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        3280,
+        520
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_LEADS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Leads",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "lead_id": "={{ $json.lead_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "name": "={{ $json.name }}",
+            "email": "={{ $json.email }}",
+            "phone": "={{ $json.phone }}",
+            "message": "={{ $json.message }}",
+            "message_normalized": "={{ $json.message_normalized }}",
+            "intent": "={{ $json.intent }}",
+            "intent_rule": "={{ $json.intent_rule }}",
+            "business_hours": "={{ $json.business_hours }}",
+            "dedupe_key": "={{ $json.dedupe_key }}",
+            "dedupe_hours": "={{ $json.dedupe_hours }}",
+            "status": "spam_logged",
+            "contacted": "false",
+            "action_taken": "log_only",
+            "error": "",
+            "duplicate_of": "",
+            "source": "={{ $json.source }}",
+            "rules_version": "={{ $json.rules_version }}"
+          },
+          "schema": [
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "email",
+              "displayName": "email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "phone",
+              "displayName": "phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message",
+              "displayName": "message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "message_normalized",
+              "displayName": "message_normalized",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent",
+              "displayName": "intent",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "intent_rule",
+              "displayName": "intent_rule",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "business_hours",
+              "displayName": "business_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_key",
+              "displayName": "dedupe_key",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "dedupe_hours",
+              "displayName": "dedupe_hours",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "contacted",
+              "displayName": "contacted",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action_taken",
+              "displayName": "action_taken",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "duplicate_of",
+              "displayName": "duplicate_of",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rules_version",
+              "displayName": "rules_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000026",
+      "name": "Log Spam",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        2500,
+        680
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst error = (base.validation_errors || []).join(\"; \");\nreturn [{\n  json: {\n    outcome_status: \"invalid\",\n    contacted: false,\n    action_taken: \"reject_invalid\",\n    http_status: 400,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000040",
+      "name": "Stamp Invalid",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst err = incoming.error;\nconst error = typeof err === 'string' ? err : (err && err.message) || 'send_failed';\nreturn [{\n  json: {\n    outcome_status: \"dedupe_check_failed\",\n    contacted: false,\n    action_taken: \"fail_closed_no_send\",\n    http_status: 503,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000041",
+      "name": "Stamp Dedupe Check Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst error = \"\";\nreturn [{\n  json: {\n    outcome_status: \"duplicate_suppressed\",\n    contacted: false,\n    action_taken: \"suppress_duplicate\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000042",
+      "name": "Stamp Duplicate",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst err = incoming.error;\nconst error = typeof err === 'string' ? err : (err && err.message) || 'send_failed';\nreturn [{\n  json: {\n    outcome_status: \"log_failed\",\n    contacted: false,\n    action_taken: \"log_failed_no_send\",\n    http_status: 502,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000043",
+      "name": "Stamp Log Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3760,
+        760
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst error = \"\";\nreturn [{\n  json: {\n    outcome_status: \"queued_in_hours\",\n    contacted: false,\n    action_taken: \"queue_for_owner\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000044",
+      "name": "Stamp Queued In Hours",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3020,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst error = \"\";\nreturn [{\n  json: {\n    outcome_status: \"owner_alerted\",\n    contacted: false,\n    action_taken: \"alert_owner\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000045",
+      "name": "Stamp Owner Alerted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3800,
+        -160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst err = incoming.error;\nconst error = typeof err === 'string' ? err : (err && err.message) || 'send_failed';\nreturn [{\n  json: {\n    outcome_status: \"owner_alerted_sheet_update_failed\",\n    contacted: false,\n    action_taken: \"alert_owner\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000046",
+      "name": "Stamp Owner Alerted Sheet Update Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3800,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst err = incoming.error;\nconst error = typeof err === 'string' ? err : (err && err.message) || 'send_failed';\nreturn [{\n  json: {\n    outcome_status: \"owner_alert_failed\",\n    contacted: false,\n    action_taken: \"alert_owner_failed\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000047",
+      "name": "Stamp Owner Alert Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3800,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst error = \"\";\nreturn [{\n  json: {\n    outcome_status: \"reply_sent\",\n    contacted: true,\n    action_taken: \"quote_auto_reply\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000048",
+      "name": "Stamp Reply Sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3540,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst err = incoming.error;\nconst error = typeof err === 'string' ? err : (err && err.message) || 'send_failed';\nreturn [{\n  json: {\n    outcome_status: \"reply_sent_sheet_update_failed\",\n    contacted: true,\n    action_taken: \"quote_auto_reply\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000049",
+      "name": "Stamp Reply Sent Sheet Update Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3540,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst err = incoming.error;\nconst error = typeof err === 'string' ? err : (err && err.message) || 'send_failed';\nreturn [{\n  json: {\n    outcome_status: \"reply_failed\",\n    contacted: false,\n    action_taken: \"quote_auto_reply_failed\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000050",
+      "name": "Stamp Reply Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3540,
+        640
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst error = \"\";\nreturn [{\n  json: {\n    outcome_status: \"spam_logged\",\n    contacted: false,\n    action_taken: \"log_only\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000051",
+      "name": "Stamp Spam",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2760,
+        680
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nconst error = \"\";\nreturn [{\n  json: {\n    outcome_status: \"unrouted\",\n    contacted: false,\n    action_taken: \"unrouted_no_send\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000052",
+      "name": "Stamp Unrouted",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2480,
+        880
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Normalize and Classify').first().json;\nconst incoming = $input.first().json;\nlet duplicateOf = '';\ntry {\n  duplicateOf = $('Dedupe Against Sheet').first().json.duplicate_of || '';\n} catch (err) {\n  duplicateOf = '';\n}\nreturn [{\n  json: {\n    demo: true,\n    portfolio: 'cka-lead-response',\n    rules_version: base.rules_version,\n    http_status: incoming.http_status,\n    lead_id: base.lead_id || '',\n    name: base.name || '',\n    email: base.email || '',\n    phone: base.phone || '',\n    intent: base.intent || '',\n    intent_rule: base.intent_rule || '',\n    business_hours: base.business_hours || '',\n    status: incoming.outcome_status,\n    contacted: incoming.contacted === true,\n    action_taken: incoming.action_taken,\n    error: incoming.error || '',\n    duplicate_of: duplicateOf,\n    source: base.source || 'manual'\n  }\n}];\n"
+      },
+      "id": "a1000001-0000-4000-8000-000000000060",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4080,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1000001-0000-4000-8000-000000000061-cond",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "webhook",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1000001-0000-4000-8000-000000000061",
+      "name": "Webhook Call?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4340,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "a1000001-0000-4000-8000-000000000062",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        4600,
+        260
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a1000001-0000-4000-8000-000000000063",
+      "name": "Manual Test Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        4600,
+        480
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Sample Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample Lead": {
+      "main": [
+        [
+          {
+            "node": "Normalize and Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Webhook": {
+      "main": [
+        [
+          {
+            "node": "Normalize and Classify",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize and Classify": {
+      "main": [
+        [
+          {
+            "node": "Valid Lead?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Lead?": {
+      "main": [
+        [
+          {
+            "node": "Read Leads",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Invalid Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Invalid Lead": {
+      "main": [
+        [
+          {
+            "node": "Stamp Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Log Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Leads": {
+      "main": [
+        [
+          {
+            "node": "Dedupe Against Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Dedupe Check Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Dedupe Against Sheet": {
+      "main": [
+        [
+          {
+            "node": "Duplicate?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate?": {
+      "main": [
+        [
+          {
+            "node": "Log Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Route by Intent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Stamp Duplicate",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Log Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Intent": {
+      "main": [
+        [
+          {
+            "node": "After Hours?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Quote Pending",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Spam",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Unrouted",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "After Hours?": {
+      "main": [
+        [
+          {
+            "node": "Log Emergency Pending",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Emergency In Hours",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Emergency Pending": {
+      "main": [
+        [
+          {
+            "node": "Prepare Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Log Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Owner Alert": {
+      "main": [
+        [
+          {
+            "node": "Email Owner Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Owner Alert": {
+      "main": [
+        [
+          {
+            "node": "Mark Owner Alerted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Owner Alert Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Owner Alerted": {
+      "main": [
+        [
+          {
+            "node": "Stamp Owner Alerted",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Owner Alerted Sheet Update Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Owner Alert Failed": {
+      "main": [
+        [
+          {
+            "node": "Stamp Owner Alert Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Owner Alert Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Emergency In Hours": {
+      "main": [
+        [
+          {
+            "node": "Stamp Queued In Hours",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Log Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Quote Pending": {
+      "main": [
+        [
+          {
+            "node": "Prepare Quote Reply",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Log Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Quote Reply": {
+      "main": [
+        [
+          {
+            "node": "Email Quote Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Quote Reply": {
+      "main": [
+        [
+          {
+            "node": "Mark Quote Replied",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Quote Reply Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Quote Replied": {
+      "main": [
+        [
+          {
+            "node": "Stamp Reply Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Reply Sent Sheet Update Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Quote Reply Failed": {
+      "main": [
+        [
+          {
+            "node": "Stamp Reply Failed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Reply Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Spam": {
+      "main": [
+        [
+          {
+            "node": "Stamp Spam",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Log Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Invalid": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Dedupe Check Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Duplicate": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Log Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Queued In Hours": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Owner Alerted": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Owner Alerted Sheet Update Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Owner Alert Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Reply Sent": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Reply Sent Sheet Update Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Reply Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Spam": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Unrouted": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Webhook Call?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Call?": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Manual Test Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Chicago",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}

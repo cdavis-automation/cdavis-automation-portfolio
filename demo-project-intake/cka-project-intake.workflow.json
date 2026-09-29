@@ -1,0 +1,846 @@
+{
+  "name": "CKA Demo — Project Intake Ticket",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## CKA Demo — Project Intake Ticket\nPortfolio demo for Chris Davis / CKA Consulting.\nFake data only. This workflow is **inactive**. It is not a live client system.\nSeparate from the lead-response demo.\n\n### What it does\n1. Accept a messy email or webhook body.\n2. Extract title, priority, requester, category, due window, and acceptance criteria with rules.\n3. One rewrite node turns the owner summary into a customer paragraph.\n4. Append a row to the Tickets sheet.\n\nNo email is sent. There is no second workflow hiding inside the rewrite node.\n\n### Placeholders\n- Sheet id: `REPLACE_WITH_TICKETS_SPREADSHEET_ID`\n- Tab: Tickets\n- Google credential name: `CKA Demo — Google Sheets`\n\nThe manual trigger runs samples/access-outage.json.",
+        "height": 460,
+        "width": 500,
+        "color": 5
+      },
+      "id": "b2000002-0000-4000-8000-000000000001",
+      "name": "Sticky: Read me",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cka-demo-project-intake",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "b2000002-0000-4000-8000-000000000002",
+      "name": "Intake Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        560,
+        280
+      ],
+      "webhookId": "c0ffee00-0000-4000-8000-0000000000b2"
+    },
+    {
+      "parameters": {},
+      "id": "b2000002-0000-4000-8000-000000000003",
+      "name": "Manual Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        280,
+        520
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "return [{ json: {\n  \"text\": \"From: Alex Kim <alex.kim@example.com>\\nSubject: Can't log in\\n\\nUrgent — SSO is down for the new class. Need access restored today. Acceptance: they can open the CRM.\"\n} }];\n"
+      },
+      "id": "b2000002-0000-4000-8000-000000000004",
+      "name": "Sample Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        520
+      ],
+      "notes": "Inlined from demo-project-intake/samples/access-outage.json.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Generated from demo-project-intake/lib/ticket-rules.js.\n// Edit the lib, then run npm run build:workflows.\n/**\n * Project-intake rules for the CKA Consulting portfolio demo.\n * One messy request becomes one ticket. The customer rewrite is a single\n * pure function used by one n8n Code node. No LLM and no network calls.\n */\n\nconst RULES_VERSION = '2026-09-29.1';\nconst ACCEPTANCE_FALLBACK = 'Requester confirms the original request is complete.';\n\nconst TICKET_COLUMNS = [\n  'ticket_id',\n  'received_at',\n  'requester_name',\n  'requester_email',\n  'title',\n  'priority',\n  'category',\n  'due_window',\n  'acceptance_criteria',\n  'summary_owner',\n  'summary_customer',\n  'raw_text',\n  'status',\n  'source',\n  'error',\n  'rules_version',\n];\n\nconst TICKET_STATUS = {\n  logged: 'logged',\n  invalid: 'invalid',\n  logFailed: 'log_failed',\n};\n\nconst P1_TERMS = [\n  'urgent',\n  'asap',\n  'outage',\n  'is down',\n  'system down',\n  'production down',\n  'blocked',\n  'cant log',\n  'cannot log',\n  'sev 1',\n  'p1',\n];\n\nconst P2_TERMS = ['this week', 'soon', 'important', 'deadline', 'by friday'];\n\nconst CATEGORY_RULES = [\n  ['access', ['login', 'log in', 'password', 'sso', 'permission', 'permissions', 'locked out', 'cant log', 'cannot log', 'access']],\n  ['billing', ['invoice', 'billing', 'payment', 'refund', 'charge']],\n  ['onboarding', ['onboard', 'onboarding', 'kickoff', 'implementation', 'new hire']],\n  ['reporting', ['report', 'dashboard', 'metric', 'pipeline', 'forecast']],\n  ['bug', ['bug', 'error', 'broken', 'not working', 'fix']],\n];\n\nfunction normalizeText(text) {\n  return String(text || '')\n    .toLowerCase()\n    .replace(/https?:\\/\\/\\S+/g, ' ')\n    .replace(/['’]/g, '')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction hasTerm(normalized, term) {\n  const needle = normalizeText(term);\n  if (!needle) return false;\n  const escaped = needle.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  return new RegExp(`(?:^|\\\\s)${escaped}(?:\\\\s|$)`).test(normalized);\n}\n\nfunction simpleHash(value) {\n  let hash = 2166136261;\n  const text = String(value);\n  for (let i = 0; i < text.length; i += 1) {\n    hash ^= text.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction parseLooseEmail(text) {\n  const source = String(text || '');\n  const fromLine = source.match(/^from:\\s*(.+)$/im);\n  let name = '';\n  let email = '';\n  if (fromLine) {\n    const named = fromLine[1].match(/^(.*?)\\s*<([^>]+)>/);\n    if (named) {\n      name = named[1].replace(/[\"']/g, '').trim();\n      email = named[2].trim().toLowerCase();\n    } else {\n      const loose = fromLine[1].match(/[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}/i);\n      email = loose ? loose[0].toLowerCase() : '';\n    }\n  }\n  if (!email) {\n    const anywhere = source.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}/i);\n    email = anywhere ? anywhere[0].toLowerCase() : '';\n  }\n  const subjectLine = source.match(/^subject:\\s*(.+)$/im);\n  const subject = subjectLine ? subjectLine[1].trim() : '';\n  const remainder = source\n    .replace(/^from:.*$/gim, '')\n    .replace(/^subject:.*$/gim, '')\n    .trim();\n  return { name, email, subject, remainder };\n}\n\nfunction priorityFor(normalized) {\n  if (P1_TERMS.some((term) => hasTerm(normalized, term))) return 'P1';\n  if (P2_TERMS.some((term) => hasTerm(normalized, term))) return 'P2';\n  return 'P3';\n}\n\nfunction categoryFor(normalized) {\n  for (const [category, terms] of CATEGORY_RULES) {\n    if (terms.some((term) => hasTerm(normalized, term))) return category;\n  }\n  return 'other';\n}\n\nfunction dueWindowFor(normalized, priority) {\n  if (['today', 'eod', 'end of day', 'asap'].some((term) => hasTerm(normalized, term))) {\n    return 'today';\n  }\n  if (['this week', 'by friday', 'next few days'].some((term) => hasTerm(normalized, term))) {\n    return 'this_week';\n  }\n  if (['this month', 'end of month', 'eom'].some((term) => hasTerm(normalized, term))) {\n    return 'this_month';\n  }\n  if (priority === 'P1') return 'today';\n  return 'unspecified';\n}\n\nfunction acceptanceCriteria(text) {\n  const parts = String(text || '')\n    .split(/\\n+|(?<=[.!?])\\s+/)\n    .map((part) => part.trim())\n    .filter(Boolean);\n  const hits = parts.filter((part) =>\n    /\\b(must|should|need|needs|needed|done when|acceptance|so that)\\b/i.test(part),\n  );\n  const joined = hits.join(' ').replace(/\\s+/g, ' ').trim();\n  if (!joined) return ACCEPTANCE_FALLBACK;\n  return joined.slice(0, 500);\n}\n\nfunction clipTitle(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 90).trim();\n}\n\nfunction extractTicket(payload, options = {}) {\n  let fromName = String(payload.from_name || payload.name || '').trim();\n  let fromEmail = String(payload.from_email || payload.email || '').trim().toLowerCase();\n  let subject = String(payload.subject || '').trim();\n  let body = String(payload.body || payload.message || payload.text || '').trim();\n\n  if (!fromEmail || !subject) {\n    const parsed = parseLooseEmail(body);\n    fromName = fromName || parsed.name;\n    fromEmail = fromEmail || parsed.email;\n    subject = subject || parsed.subject;\n    if (parsed.subject || parsed.name) body = parsed.remainder || body;\n  }\n\n  const content = [subject, body].filter(Boolean).join('\\n').slice(0, 5000);\n  const normalized = normalizeText(content);\n  const priority = priorityFor(normalized);\n  const category = categoryFor(normalized);\n  const dueWindow = dueWindowFor(normalized, priority);\n  const title = clipTitle(subject || body.split(/(?<=[.!?])\\s+/)[0] || '');\n  const criteria = acceptanceCriteria(content);\n  const now = options.now ? new Date(options.now) : new Date();\n  const validationErrors = [];\n\n  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(fromEmail)) {\n    validationErrors.push('requester email is required');\n  }\n  if (!content) validationErrors.push('request text is required');\n\n  const ticketId = `tkt_${simpleHash(`${fromEmail}|${title}|${now.toISOString()}`)}`;\n  const summaryOwner = title\n    ? `[${priority} | ${category} | ${dueWindow}] ${title} — ${fromEmail || 'unknown'}`\n    : '';\n\n  return {\n    ok: validationErrors.length === 0,\n    validation_errors: validationErrors,\n    ticket_id: ticketId,\n    received_at: now.toISOString(),\n    requester_name: fromName,\n    requester_email: fromEmail,\n    title,\n    priority,\n    category,\n    due_window: dueWindow,\n    acceptance_criteria: criteria,\n    summary_owner: summaryOwner,\n    raw_text: content,\n    rules_version: RULES_VERSION,\n    status: validationErrors.length ? TICKET_STATUS.invalid : 'extracted',\n  };\n}\n\n/** One rewrite step: owner bracket summary stays put; this adds the customer paragraph. */\nfunction rewriteForCustomer(ticket) {\n  const duePlain = {\n    today: 'today',\n    this_week: 'this week',\n    this_month: 'this month',\n    unspecified: 'the next scheduled review',\n  }[ticket.due_window] || 'the next scheduled review';\n  const categoryPlain = ticket.category === 'other' ? 'general' : ticket.category;\n  const article = /^[aeiou]/i.test(categoryPlain) ? 'an' : 'a';\n  const name = ticket.requester_name || 'there';\n  const summaryCustomer = [\n    `Hi ${name} — we logged \"${ticket.title}\" as ${article} ${categoryPlain} request.`,\n    `We are aiming for ${duePlain}.`,\n    `We will treat it as done when: ${ticket.acceptance_criteria}`,\n    'This summary is sample copy from a portfolio demo.',\n  ].join(' ');\n\n  return {\n    ...ticket,\n    summary_customer: summaryCustomer,\n  };\n}\n\nconst raw = $input.first().json;\nconst payload = raw.body && typeof raw.body === 'object' && !Array.isArray(raw.body) ? raw.body : raw;\nconst ticket = extractTicket(payload);\nticket.source = raw.headers || raw.webhookUrl ? 'webhook' : 'manual';\nreturn [{ json: ticket }];\n"
+      },
+      "id": "b2000002-0000-4000-8000-000000000005",
+      "name": "Extract Ticket",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b2000002-0000-4000-8000-000000000006-cond",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true,
+                "name": "filter.operator.true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000002-0000-4000-8000-000000000006",
+      "name": "Valid Request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1160,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_TICKETS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Tickets",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id": "={{ $json.ticket_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "requester_name": "={{ $json.requester_name }}",
+            "requester_email": "={{ $json.requester_email }}",
+            "title": "={{ $json.title }}",
+            "priority": "={{ $json.priority }}",
+            "category": "={{ $json.category }}",
+            "due_window": "={{ $json.due_window }}",
+            "acceptance_criteria": "={{ $json.acceptance_criteria }}",
+            "summary_owner": "={{ $json.summary_owner }}",
+            "summary_customer": "",
+            "raw_text": "={{ $json.raw_text }}",
+            "status": "invalid",
+            "source": "={{ $json.source }}",
+            "error": "={{ ($json.validation_errors || []).join(\"; \") }}",
+            "rules_version": "={{ $json.rules_version }}"
+          },
+          "schema": [
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "requester_name",
+              "displayName": "requester_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "requester_email",
+              "displayName": "requester_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "due_window",
+              "displayName": "due_window",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "acceptance_criteria",
+              "displayName": "acceptance_criteria",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary_owner",
+              "displayName": "summary_owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary_customer",
+              "displayName": "summary_customer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_text",
+              "displayName": "raw_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rules_version",
+              "displayName": "rules_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "b2000002-0000-4000-8000-000000000007",
+      "name": "Log Invalid Ticket",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1420,
+        560
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "// Generated from demo-project-intake/lib/ticket-rules.js.\n// Edit the lib, then run npm run build:workflows.\n/**\n * Project-intake rules for the CKA Consulting portfolio demo.\n * One messy request becomes one ticket. The customer rewrite is a single\n * pure function used by one n8n Code node. No LLM and no network calls.\n */\n\nconst RULES_VERSION = '2026-09-29.1';\nconst ACCEPTANCE_FALLBACK = 'Requester confirms the original request is complete.';\n\nconst TICKET_COLUMNS = [\n  'ticket_id',\n  'received_at',\n  'requester_name',\n  'requester_email',\n  'title',\n  'priority',\n  'category',\n  'due_window',\n  'acceptance_criteria',\n  'summary_owner',\n  'summary_customer',\n  'raw_text',\n  'status',\n  'source',\n  'error',\n  'rules_version',\n];\n\nconst TICKET_STATUS = {\n  logged: 'logged',\n  invalid: 'invalid',\n  logFailed: 'log_failed',\n};\n\nconst P1_TERMS = [\n  'urgent',\n  'asap',\n  'outage',\n  'is down',\n  'system down',\n  'production down',\n  'blocked',\n  'cant log',\n  'cannot log',\n  'sev 1',\n  'p1',\n];\n\nconst P2_TERMS = ['this week', 'soon', 'important', 'deadline', 'by friday'];\n\nconst CATEGORY_RULES = [\n  ['access', ['login', 'log in', 'password', 'sso', 'permission', 'permissions', 'locked out', 'cant log', 'cannot log', 'access']],\n  ['billing', ['invoice', 'billing', 'payment', 'refund', 'charge']],\n  ['onboarding', ['onboard', 'onboarding', 'kickoff', 'implementation', 'new hire']],\n  ['reporting', ['report', 'dashboard', 'metric', 'pipeline', 'forecast']],\n  ['bug', ['bug', 'error', 'broken', 'not working', 'fix']],\n];\n\nfunction normalizeText(text) {\n  return String(text || '')\n    .toLowerCase()\n    .replace(/https?:\\/\\/\\S+/g, ' ')\n    .replace(/['’]/g, '')\n    .replace(/[^a-z0-9\\s]/g, ' ')\n    .replace(/\\s+/g, ' ')\n    .trim();\n}\n\nfunction hasTerm(normalized, term) {\n  const needle = normalizeText(term);\n  if (!needle) return false;\n  const escaped = needle.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  return new RegExp(`(?:^|\\\\s)${escaped}(?:\\\\s|$)`).test(normalized);\n}\n\nfunction simpleHash(value) {\n  let hash = 2166136261;\n  const text = String(value);\n  for (let i = 0; i < text.length; i += 1) {\n    hash ^= text.charCodeAt(i);\n    hash = Math.imul(hash, 16777619);\n  }\n  return (hash >>> 0).toString(16).padStart(8, '0');\n}\n\nfunction parseLooseEmail(text) {\n  const source = String(text || '');\n  const fromLine = source.match(/^from:\\s*(.+)$/im);\n  let name = '';\n  let email = '';\n  if (fromLine) {\n    const named = fromLine[1].match(/^(.*?)\\s*<([^>]+)>/);\n    if (named) {\n      name = named[1].replace(/[\"']/g, '').trim();\n      email = named[2].trim().toLowerCase();\n    } else {\n      const loose = fromLine[1].match(/[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}/i);\n      email = loose ? loose[0].toLowerCase() : '';\n    }\n  }\n  if (!email) {\n    const anywhere = source.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}/i);\n    email = anywhere ? anywhere[0].toLowerCase() : '';\n  }\n  const subjectLine = source.match(/^subject:\\s*(.+)$/im);\n  const subject = subjectLine ? subjectLine[1].trim() : '';\n  const remainder = source\n    .replace(/^from:.*$/gim, '')\n    .replace(/^subject:.*$/gim, '')\n    .trim();\n  return { name, email, subject, remainder };\n}\n\nfunction priorityFor(normalized) {\n  if (P1_TERMS.some((term) => hasTerm(normalized, term))) return 'P1';\n  if (P2_TERMS.some((term) => hasTerm(normalized, term))) return 'P2';\n  return 'P3';\n}\n\nfunction categoryFor(normalized) {\n  for (const [category, terms] of CATEGORY_RULES) {\n    if (terms.some((term) => hasTerm(normalized, term))) return category;\n  }\n  return 'other';\n}\n\nfunction dueWindowFor(normalized, priority) {\n  if (['today', 'eod', 'end of day', 'asap'].some((term) => hasTerm(normalized, term))) {\n    return 'today';\n  }\n  if (['this week', 'by friday', 'next few days'].some((term) => hasTerm(normalized, term))) {\n    return 'this_week';\n  }\n  if (['this month', 'end of month', 'eom'].some((term) => hasTerm(normalized, term))) {\n    return 'this_month';\n  }\n  if (priority === 'P1') return 'today';\n  return 'unspecified';\n}\n\nfunction acceptanceCriteria(text) {\n  const parts = String(text || '')\n    .split(/\\n+|(?<=[.!?])\\s+/)\n    .map((part) => part.trim())\n    .filter(Boolean);\n  const hits = parts.filter((part) =>\n    /\\b(must|should|need|needs|needed|done when|acceptance|so that)\\b/i.test(part),\n  );\n  const joined = hits.join(' ').replace(/\\s+/g, ' ').trim();\n  if (!joined) return ACCEPTANCE_FALLBACK;\n  return joined.slice(0, 500);\n}\n\nfunction clipTitle(value) {\n  return String(value || '').replace(/\\s+/g, ' ').trim().slice(0, 90).trim();\n}\n\nfunction extractTicket(payload, options = {}) {\n  let fromName = String(payload.from_name || payload.name || '').trim();\n  let fromEmail = String(payload.from_email || payload.email || '').trim().toLowerCase();\n  let subject = String(payload.subject || '').trim();\n  let body = String(payload.body || payload.message || payload.text || '').trim();\n\n  if (!fromEmail || !subject) {\n    const parsed = parseLooseEmail(body);\n    fromName = fromName || parsed.name;\n    fromEmail = fromEmail || parsed.email;\n    subject = subject || parsed.subject;\n    if (parsed.subject || parsed.name) body = parsed.remainder || body;\n  }\n\n  const content = [subject, body].filter(Boolean).join('\\n').slice(0, 5000);\n  const normalized = normalizeText(content);\n  const priority = priorityFor(normalized);\n  const category = categoryFor(normalized);\n  const dueWindow = dueWindowFor(normalized, priority);\n  const title = clipTitle(subject || body.split(/(?<=[.!?])\\s+/)[0] || '');\n  const criteria = acceptanceCriteria(content);\n  const now = options.now ? new Date(options.now) : new Date();\n  const validationErrors = [];\n\n  if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(fromEmail)) {\n    validationErrors.push('requester email is required');\n  }\n  if (!content) validationErrors.push('request text is required');\n\n  const ticketId = `tkt_${simpleHash(`${fromEmail}|${title}|${now.toISOString()}`)}`;\n  const summaryOwner = title\n    ? `[${priority} | ${category} | ${dueWindow}] ${title} — ${fromEmail || 'unknown'}`\n    : '';\n\n  return {\n    ok: validationErrors.length === 0,\n    validation_errors: validationErrors,\n    ticket_id: ticketId,\n    received_at: now.toISOString(),\n    requester_name: fromName,\n    requester_email: fromEmail,\n    title,\n    priority,\n    category,\n    due_window: dueWindow,\n    acceptance_criteria: criteria,\n    summary_owner: summaryOwner,\n    raw_text: content,\n    rules_version: RULES_VERSION,\n    status: validationErrors.length ? TICKET_STATUS.invalid : 'extracted',\n  };\n}\n\n/** One rewrite step: owner bracket summary stays put; this adds the customer paragraph. */\nfunction rewriteForCustomer(ticket) {\n  const duePlain = {\n    today: 'today',\n    this_week: 'this week',\n    this_month: 'this month',\n    unspecified: 'the next scheduled review',\n  }[ticket.due_window] || 'the next scheduled review';\n  const categoryPlain = ticket.category === 'other' ? 'general' : ticket.category;\n  const article = /^[aeiou]/i.test(categoryPlain) ? 'an' : 'a';\n  const name = ticket.requester_name || 'there';\n  const summaryCustomer = [\n    `Hi ${name} — we logged \"${ticket.title}\" as ${article} ${categoryPlain} request.`,\n    `We are aiming for ${duePlain}.`,\n    `We will treat it as done when: ${ticket.acceptance_criteria}`,\n    'This summary is sample copy from a portfolio demo.',\n  ].join(' ');\n\n  return {\n    ...ticket,\n    summary_customer: summaryCustomer,\n  };\n}\n\nconst ticket = $input.first().json;\nreturn [{ json: rewriteForCustomer(ticket) }];\n"
+      },
+      "id": "b2000002-0000-4000-8000-000000000008",
+      "name": "Rewrite Customer Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        240
+      ],
+      "notes": "The only rewrite step. Swap this one node for an LLM later if you want. The demo default is rules.",
+      "notesInFlow": true
+    },
+    {
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_TICKETS_SPREADSHEET_ID",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Tickets",
+          "mode": "name"
+        },
+        "options": {
+          "cellFormat": "RAW"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ticket_id": "={{ $json.ticket_id }}",
+            "received_at": "={{ $json.received_at }}",
+            "requester_name": "={{ $json.requester_name }}",
+            "requester_email": "={{ $json.requester_email }}",
+            "title": "={{ $json.title }}",
+            "priority": "={{ $json.priority }}",
+            "category": "={{ $json.category }}",
+            "due_window": "={{ $json.due_window }}",
+            "acceptance_criteria": "={{ $json.acceptance_criteria }}",
+            "summary_owner": "={{ $json.summary_owner }}",
+            "summary_customer": "={{ $json.summary_customer }}",
+            "raw_text": "={{ $json.raw_text }}",
+            "status": "logged",
+            "source": "={{ $json.source }}",
+            "error": "",
+            "rules_version": "={{ $json.rules_version }}"
+          },
+          "schema": [
+            {
+              "id": "ticket_id",
+              "displayName": "ticket_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "received_at",
+              "displayName": "received_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "requester_name",
+              "displayName": "requester_name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "requester_email",
+              "displayName": "requester_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "title",
+              "displayName": "title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "due_window",
+              "displayName": "due_window",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "acceptance_criteria",
+              "displayName": "acceptance_criteria",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary_owner",
+              "displayName": "summary_owner",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "summary_customer",
+              "displayName": "summary_customer",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "raw_text",
+              "displayName": "raw_text",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "status",
+              "displayName": "status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "source",
+              "displayName": "source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error",
+              "displayName": "error",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "rules_version",
+              "displayName": "rules_version",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        }
+      },
+      "id": "b2000002-0000-4000-8000-000000000009",
+      "name": "Log Ticket",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1700,
+        240
+      ],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID",
+          "name": "CKA Demo — Google Sheets"
+        }
+      },
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Extract Ticket').first().json;\nconst incoming = $input.first().json;\nconst error = (base.validation_errors || []).join(\"; \");\nreturn [{\n  json: {\n    outcome_status: \"invalid\",\n    http_status: 400,\n    error\n  }\n}];\n"
+      },
+      "id": "b2000002-0000-4000-8000-000000000010",
+      "name": "Stamp Invalid",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1700,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Extract Ticket').first().json;\nconst incoming = $input.first().json;\nconst error = \"\";\nreturn [{\n  json: {\n    outcome_status: \"logged\",\n    http_status: 200,\n    error\n  }\n}];\n"
+      },
+      "id": "b2000002-0000-4000-8000-000000000011",
+      "name": "Stamp Logged",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const base = $('Extract Ticket').first().json;\nconst incoming = $input.first().json;\nconst err = incoming.error;\nconst error = typeof err === 'string' ? err : (err && err.message) || 'sheets_write_failed';\nreturn [{\n  json: {\n    outcome_status: \"log_failed\",\n    http_status: 502,\n    error\n  }\n}];\n"
+      },
+      "id": "b2000002-0000-4000-8000-000000000012",
+      "name": "Stamp Log Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1960,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const extracted = $('Extract Ticket').first().json;\nconst incoming = $input.first().json;\nlet ticket = extracted;\ntry {\n  const rewritten = $('Rewrite Customer Summary').first().json;\n  if (rewritten && rewritten.summary_customer) ticket = rewritten;\n} catch (err) {\n  ticket = extracted;\n}\nreturn [{\n  json: {\n    demo: true,\n    portfolio: 'cka-project-intake',\n    rules_version: extracted.rules_version,\n    http_status: incoming.http_status,\n    status: incoming.outcome_status,\n    error: incoming.error || '',\n    source: extracted.source || 'manual',\n    ticket_id: ticket.ticket_id || '',\n    requester_name: ticket.requester_name || '',\n    requester_email: ticket.requester_email || '',\n    title: ticket.title || '',\n    priority: ticket.priority || '',\n    category: ticket.category || '',\n    due_window: ticket.due_window || '',\n    acceptance_criteria: ticket.acceptance_criteria || '',\n    summary_owner: ticket.summary_owner || '',\n    summary_customer: ticket.summary_customer || ''\n  }\n}];\n"
+      },
+      "id": "b2000002-0000-4000-8000-000000000013",
+      "name": "Build Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2240,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "b2000002-0000-4000-8000-000000000014-cond",
+              "leftValue": "={{ $json.source }}",
+              "rightValue": "webhook",
+              "operator": {
+                "type": "string",
+                "operation": "equals",
+                "name": "filter.operator.equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b2000002-0000-4000-8000-000000000014",
+      "name": "Webhook Call?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2500,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "responseCode": "={{ $json.http_status }}"
+        }
+      },
+      "id": "b2000002-0000-4000-8000-000000000015",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        2760,
+        180
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "b2000002-0000-4000-8000-000000000016",
+      "name": "Manual Test Complete",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        2760,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Manual Trigger": {
+      "main": [
+        [
+          {
+            "node": "Sample Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample Request": {
+      "main": [
+        [
+          {
+            "node": "Extract Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intake Webhook": {
+      "main": [
+        [
+          {
+            "node": "Extract Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Ticket": {
+      "main": [
+        [
+          {
+            "node": "Valid Request?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Valid Request?": {
+      "main": [
+        [
+          {
+            "node": "Rewrite Customer Summary",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Invalid Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Invalid Ticket": {
+      "main": [
+        [
+          {
+            "node": "Stamp Invalid",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Log Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rewrite Customer Summary": {
+      "main": [
+        [
+          {
+            "node": "Log Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Ticket": {
+      "main": [
+        [
+          {
+            "node": "Stamp Logged",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Stamp Log Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Invalid": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Logged": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stamp Log Failed": {
+      "main": [
+        [
+          {
+            "node": "Build Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Response": {
+      "main": [
+        [
+          {
+            "node": "Webhook Call?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook Call?": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Manual Test Complete",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Chicago",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  }
+}
