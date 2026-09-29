@@ -1,0 +1,1 @@
+lead_id,received_at,name,email,phone,message,message_normalized,intent,intent_rule,business_hours,dedupe_key,dedupe_hours,status,contacted,action_taken,error,duplicate_of,source,rules_version

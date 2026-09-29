@@ -1,0 +1,13 @@
+{
+  "name": "cdavis-automation-portfolio",
+  "private": true,
+  "type": "module",
+  "description": "Public n8n portfolio demos for Chris Davis / CKA Consulting. Fake data only.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:workflows": "node scripts/build-workflows.mjs",
+    "test": "node scripts/build-workflows.mjs --check && node --test"
+  }
+}

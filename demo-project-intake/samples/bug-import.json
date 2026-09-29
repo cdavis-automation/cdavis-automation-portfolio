@@ -1,0 +1,6 @@
+{
+  "from_name": "Sam Ortiz",
+  "from_email": "sam.ortiz@example.com",
+  "subject": "CSV import throws an error",
+  "body": "The import button throws an error and is not working. Please fix this week. Done when a user can import a CSV without an error."
+}
