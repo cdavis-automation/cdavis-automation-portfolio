@@ -10,11 +10,7 @@ Fictional shop used in the sample email copy: **Northwind Home Services**.
 
 > Built an n8n lead-response router that classifies inbound leads (emergency, quote, or spam), applies business-hours routing and 24-hour dedupe, logs every lead to Google Sheets, and marks a lead contacted only after a successful send.
 
-## Public URL placeholder
-
-`https://YOUR_N8N_HOST/webhook/cka-demo-lead-response`
-
-The test URL while the editor is listening is `http://localhost:5678/webhook-test/cka-demo-lead-response`. The production path stays dark until you activate the workflow, and this repo ships it inactive.
+There is no hosted demo URL. Import the JSON, leave it inactive, then use the **Manual Trigger** or a local webhook-test listen. The localhost curl example below is the supported test path.
 
 ## Problem
 
@@ -193,4 +189,4 @@ Webhook body:
 - Credential names are labels you create in n8n. The ids in JSON are the placeholders `REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID` and `REPLACE_WITH_SMTP_CREDENTIAL_ID`.
 - Mail nodes are pinned to `owner@example.com` and `dispatch@example.com`.
 - Sample people use `@example.com` and `555-01xx` numbers.
-- Do not activate the workflow on a public URL until webhook authentication is added and the placeholders are replaced.
+- Keep the workflow inactive for local testing. Before any real exposure, add webhook authentication and replace the placeholders.

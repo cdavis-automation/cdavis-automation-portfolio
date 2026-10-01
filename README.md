@@ -1,37 +1,74 @@
-# CKA Consulting — automation portfolio
+# Christopher Davis — GTM automation portfolio
 
-Public n8n demos for **Chris Davis / CKA Consulting**. These workflows are **portfolio pieces built on fake data**. They are not live client systems, and they are not connected to a real inbox, CRM, or spreadsheet.
+Sales operator turned systems builder. Vancouver, WA.
 
-I also ship production systems on Make.
+**Lanes:** Revenue Operations · Sales Operations · Sales Enablement · GTM Systems
 
-## Resume bullets
+**Stack:** Make.com · n8n · Clay · HubSpot · Airtable · Claude · SQL · REST APIs · Webhooks
 
-Lead response:
+Public workflows in this repo use **fake data only**. They are not live client systems and are not connected to a real inbox, CRM, or spreadsheet.
 
-> Built an n8n lead-response router that classifies inbound leads (emergency, quote, or spam), applies business-hours routing and 24-hour dedupe, logs every lead to Google Sheets, and marks a lead contacted only after a successful send.
+---
 
-Project intake:
+## Projects (same names as the resume)
 
-> Built an n8n project-intake workflow that turns messy free-text requests into structured tickets (title, priority, requester, category, due window, acceptance criteria) and rewrites a customer-facing summary in one step.
+### 1. Clay → agent analysis → Airtable → HubSpot GTM loop
 
-## Demos
+**Not in this repo** (production / private architecture — not exportable here).
 
-| Demo | Workflow name in n8n | Folder | Public URL placeholder |
-| --- | --- | --- | --- |
-| Lead response | `CKA Demo — Lead Response Router` | [`demo-lead-response/`](demo-lead-response/) | `https://YOUR_N8N_HOST/webhook/cka-demo-lead-response` |
-| Project intake | `CKA Demo — Project Intake Ticket` | [`demo-project-intake/`](demo-project-intake/) | `https://YOUR_N8N_HOST/webhook/cka-demo-project-intake` |
+| | |
+|---|---|
+| **Problem** | Enrichment, cleanup, scoring, and CRM landing lived in separate tools with handoff risk. |
+| **What I built** | Enrich in Clay → agent analysis / dedupe / mapping → score / tier in Airtable → land in HubSpot (custom properties, lifecycle, deal pipeline, GTM dashboard). Own the architecture; audit every handoff. |
+| **Status** | Production GTM loop. Case study on request. No workflow JSON in this repo. |
 
-Both workflow files ship **inactive** (`"active": false`). Import them, replace the placeholders, and execute a sample before you ever activate a webhook.
+### 2. n8n Lead-Response Router
 
-People, phone numbers, and the shop name in the sample copy (**Northwind Home Services**) are fictional. Every address is `@example.com`.
+**In this repo:** [`demo-lead-response/`](demo-lead-response/)
 
-## What you can run without accounts
+| | |
+|---|---|
+| **Problem** | After-hours emergencies get lost; spam burns replies; a failed send must not look contacted. |
+| **What I built** | Importable n8n workflow: classify emergency / quote / spam, business-hours routing, 24-hour dedupe, Google Sheets logging; mark contacted only after a successful send. Rule-based (no LLM node). |
+| **Status** | Public **fake-data** demo. Workflow ships inactive. Import the JSON, wire your own sheet + SMTP credentials, then test — there is no hosted demo URL. |
 
-`npm test` rebuild-checks the workflow JSON and runs the classification, dedupe, routing, and ticket-extraction rules in Node. That does not need n8n, Google, or SMTP.
+Fictional shop in sample copy: **Northwind Home Services**. All addresses are `@example.com`.
 
-The n8n import adds the part a reviewer can click: webhooks, Google Sheets nodes, and SMTP nodes, all pointed at placeholder credential names.
+### 3. Make + Claude lead response (production)
 
-## Layout
+**Not in this repo** (production — not exportable here).
+
+| | |
+|---|---|
+| **Problem** | Two inbound channels need fast classify/reply without double-sends or marking a lead contacted on send fail. |
+| **What I built** | Production Make.com + Claude: EMERGENCY / QUOTE / SPAM, business-hours aware, Airtable logging, owner alerts; spam logged never replied. Hardened before go-live (dual-webhook race, reply-branch dedupe, fail-safe error handlers). |
+| **Status** | Production. Case study on request. Scenarios stay private — no Make blueprint in this repo. |
+
+---
+
+## Also in this repo (fake-data demo; not a resume project line)
+
+### n8n Project Intake Ticket
+
+**Folder:** [`demo-project-intake/`](demo-project-intake/)
+
+| | |
+|---|---|
+| **Problem** | Messy free-text requests need a structured ticket another person can work. |
+| **What I built** | Importable n8n workflow: title, priority, requester, category, due window, acceptance criteria, plus a customer-facing summary rewrite. Rule-based (no LLM node). No email send. |
+| **Status** | Public **fake-data** demo. Import the JSON — no hosted demo URL. |
+
+---
+
+## How to run the n8n demos
+
+```bash
+npm test
+```
+
+Rebuild-checks the workflow JSON and runs classification / dedupe / routing / ticket-extraction rules in Node. No n8n, Google, or SMTP required.
+
+To try the clickable path: import the inactive `.workflow.json` from each demo folder into n8n, replace spreadsheet / credential placeholders, leave the workflow inactive until you are ready, then use Manual Trigger or a local webhook-test listen. Details live in each demo’s README.
 
 ```text
 demo-lead-response/
@@ -48,4 +85,13 @@ demo-project-intake/
   sheets/tickets-headers.csv
 ```
 
-Edit a rule in `lib/`, then run `npm run build:workflows`. The Code nodes in the JSON are generated from those files.
+Edit a rule in `lib/`, then run `npm run build:workflows`.
+
+---
+
+## What this repo is not
+
+- Not a marketing site
+- Not live production credentials or client data
+- Not Salesforce Admin proof
+- Not hosted webhook URLs — import the JSON
