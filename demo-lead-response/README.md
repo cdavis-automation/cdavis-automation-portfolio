@@ -1,10 +1,12 @@
-# Demo A — Lead response router
+# n8n Lead-Response Router
+
+Public **fake-data** demo of the resume project below. The workflow classifies inbound leads, routes them by business hours, and logs every outcome. It is not a live client system and it is not connected to a real inbox.
 
 **Workflow name:** `CKA Demo — Lead Response Router`
 **File:** [`cka-lead-response.workflow.json`](cka-lead-response.workflow.json)
-**Status:** inactive portfolio demo. Fake data only. Not a live client system.
+**Status:** Ships inactive. Import the JSON and test it yourself — there is no hosted demo URL.
 
-Fictional shop used in the sample email copy: **Northwind Home Services**.
+Fictional shop in the sample email copy: **Northwind Home Services**. All addresses are `@example.com`.
 
 ## Resume one-liner
 

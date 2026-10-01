@@ -1,10 +1,10 @@
-# Demo B — Project intake to a structured ticket
+# n8n Project Intake Ticket
+
+Public **fake-data** demo, separate from the [lead-response router](../demo-lead-response/). The workflow turns a messy free-text request into a structured ticket and a customer-facing summary. It does not send email. It is not a live client system.
 
 **Workflow name:** `CKA Demo — Project Intake Ticket`
 **File:** [`cka-project-intake.workflow.json`](cka-project-intake.workflow.json)
-**Status:** inactive portfolio demo. Fake data only. Not a live client system.
-
-This workflow is separate from the lead-response demo. It does not send email.
+**Status:** Ships inactive. Import the JSON and test it yourself — there is no hosted demo URL.
 
 ## Resume one-liner
 
@@ -47,7 +47,7 @@ flowchart TD
 
 ### Log store
 
-Google Sheets, tab `Tickets`, spreadsheet placeholder `REPLACE_WITH_TICKETS_SPREADSHEET_ID`. Same credential **name** as Demo A (`CKA Demo — Google Sheets`), separate spreadsheet id so this demo imports on its own. You can point both workflows at one spreadsheet with two tabs if you want; change the document id, not the tab name.
+Google Sheets, tab `Tickets`, spreadsheet placeholder `REPLACE_WITH_TICKETS_SPREADSHEET_ID`. Same credential **name** as the lead-response demo (`CKA Demo — Google Sheets`), separate spreadsheet id so this demo imports on its own. You can point both workflows at one spreadsheet with two tabs if you want; change the document id, not the tab name.
 
 Header row: [`sheets/tickets-headers.csv`](sheets/tickets-headers.csv).
 
@@ -79,7 +79,7 @@ n8n:
 
 1. Import [`cka-project-intake.workflow.json`](cka-project-intake.workflow.json). It stays inactive.
 2. Create a sheet tab named `Tickets` and paste [`sheets/tickets-headers.csv`](sheets/tickets-headers.csv) into row 1.
-3. Create a Google Sheets OAuth2 credential named `CKA Demo — Google Sheets` (the same name Demo A uses).
+3. Create a Google Sheets OAuth2 credential named `CKA Demo — Google Sheets` (the same name the lead-response demo uses).
 4. Replace `REPLACE_WITH_TICKETS_SPREADSHEET_ID`, then re-select the credential. The id `REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID` is a placeholder and will not bind on its own.
 5. Execute **Manual Trigger**, or POST a sample:
 
