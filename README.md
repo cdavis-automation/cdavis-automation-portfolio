@@ -4,7 +4,7 @@ Sales operator turned systems builder · Vancouver, WA
 
 **Focus:** Revenue Operations · Sales Operations · Sales Enablement · GTM Systems
 
-**Tools:** Make.com · n8n · Clay · HubSpot · Airtable · Claude · SQL · REST APIs · Webhooks
+**Tools:** Make.com · n8n · Clay · HubSpot · Airtable · Claude · SuperGrok · Grok Bots · Cursor · SQL · REST APIs · Webhooks · Python
 
 Workflows in this repo use fictional sample data only.
 
