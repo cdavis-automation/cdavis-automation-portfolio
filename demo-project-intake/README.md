@@ -10,11 +10,7 @@ This workflow is separate from the lead-response demo. It does not send email.
 
 > Built an n8n project-intake workflow that turns messy free-text requests into structured tickets (title, priority, requester, category, due window, acceptance criteria) and rewrites a customer-facing summary in one step.
 
-## Public URL placeholder
-
-`https://YOUR_N8N_HOST/webhook/cka-demo-project-intake`
-
-Test URL while the editor is listening: `http://localhost:5678/webhook-test/cka-demo-project-intake`.
+There is no hosted demo URL. Import the JSON, leave it inactive, then use the **Manual Trigger** or a local webhook-test listen. The localhost curl example below is the supported test path.
 
 ## Problem
 
@@ -151,4 +147,4 @@ The manual trigger uses the access-outage sample, which is a pasted email rather
 - No live inboxes, spreadsheet ids, webhook secrets, or API keys.
 - Requesters in `samples/` use `@example.com` only.
 - `REPLACE_WITH_TICKETS_SPREADSHEET_ID` and `REPLACE_WITH_GOOGLE_SHEETS_CREDENTIAL_ID` are placeholders.
-- Do not activate the webhook on a public URL until you add authentication and a real spreadsheet.
+- Keep the workflow inactive for local testing. Before any real exposure, add webhook authentication and replace the placeholders.
