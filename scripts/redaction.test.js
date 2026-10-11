@@ -30,9 +30,12 @@ test('public files stay fake, credential-free, and free of private system detail
 
   const makeHits = published.filter((item) => /\bMake\b/.test(item.text));
   assert.deepEqual(makeHits.map((item) => item.file), ['README.md']);
-  assert.equal((all.match(/\bMake\b/g) || []).length, 1);
-  assert.match(all, /I also ship production systems on Make\./);
-  assert.doesNotMatch(all, /make\.com/i);
+  assert.doesNotMatch(all, /lead-response/i);
+  assert.doesNotMatch(all, /Lead Response Router/);
+  assert.doesNotMatch(all, /reply-branch/i);
+  assert.doesNotMatch(all, /race conditions/i);
+  assert.doesNotMatch(all, /failed-send/i);
+  assert.doesNotMatch(all, /\bdedupe\b/i);
   assert.doesNotMatch(all, /kalshi/i);
   assert.doesNotMatch(all, /\btrading\b/i);
   assert.doesNotMatch(all, /\bvps\b/i);

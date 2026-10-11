@@ -3,7 +3,7 @@
   "nodes": [
     {
       "parameters": {
-        "content": "## CKA Demo — Project Intake Ticket\nPortfolio demo for Chris Davis / CKA Consulting.\nFake data only. This workflow is **inactive**. It is not a live client system.\nSeparate from the lead-response demo.\n\n### What it does\n1. Accept a messy email or webhook body.\n2. Extract title, priority, requester, category, due window, and acceptance criteria with rules.\n3. One rewrite node turns the owner summary into a customer paragraph.\n4. Append a row to the Tickets sheet.\n\nNo email is sent. There is no second workflow hiding inside the rewrite node.\n\n### Placeholders\n- Sheet id: `REPLACE_WITH_TICKETS_SPREADSHEET_ID`\n- Tab: Tickets\n- Google credential name: `CKA Demo — Google Sheets`\n\nThe manual trigger runs samples/access-outage.json.",
+        "content": "## CKA Demo — Project Intake Ticket\nPortfolio demo for Chris Davis / CKA Consulting.\nFake data only. This workflow is **inactive**. It is not a live client system.\n\n### What it does\n1. Accept a messy email or webhook body.\n2. Extract title, priority, requester, category, due window, and acceptance criteria with rules.\n3. One rewrite node turns the owner summary into a customer paragraph.\n4. Append a row to the Tickets sheet.\n\nNo email is sent. There is no second workflow hiding inside the rewrite node.\n\n### Placeholders\n- Sheet id: `REPLACE_WITH_TICKETS_SPREADSHEET_ID`\n- Tab: Tickets\n- Google credential name: `CKA Demo — Google Sheets`\n\nThe manual trigger runs samples/access-outage.json.",
         "height": 460,
         "width": 500,
         "color": 5
